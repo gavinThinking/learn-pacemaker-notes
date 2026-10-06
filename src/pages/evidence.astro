@@ -1,0 +1,44 @@
+---
+import Base from "../layouts/Base.astro";
+import { site } from "../data/site";
+---
+
+<Base title="证据边界" description="本站的结论各自依据什么：核对过源码、只依据文档，还是还没验证。">
+  <div class="shell page-head">
+    <p class="eyebrow">证据边界</p>
+    <h1 class="display">哪些核对过，哪些没有</h1>
+    <p class="lede">
+      读者应该能分清「源码里就是这样」「文档这么写」和「我以为是这样」。这一页把本站用到的证据等级和现状写清楚。
+    </p>
+  </div>
+
+  <div class="shell">
+    <article class="prose">
+      <h2>证据等级</h2>
+      <div class="table-scroll">
+        <table>
+          <thead><tr><th>等级</th><th>含义</th></tr></thead>
+          <tbody>
+            <tr><td>已对照源码</td><td>在 <a href={site.upstream.href}>Pacemaker-2.1.11</a> tag 里找到了对应代码</td></tr>
+            <tr><td>仅依据文档</td><td>照 <a href={site.upstream.docs}>Pacemaker Explained 2.1</a> 等官方文档写的，还没对过源码</td></tr>
+            <tr><td>预测</td><td>读之前先写下的判断，等着被源码或实验推翻</td></tr>
+            <tr><td>平台验证</td><td>在自建集群上实际跑过，结论附验证摘要</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h2>现状</h2>
+      <ul>
+        <li><a href="/map/">架构地图</a>的守护进程图：仅依据文档；守护进程目录名已在 2.1.11 tag 里核对过。</li>
+        <li>还没有发布手记，所以没有「已对照源码」或「平台验证」的结论。</li>
+        <li><a href="/platform/">实验平台</a>还没有部署任何资源，故障演练都没做过。</li>
+      </ul>
+
+      <h2>版本</h2>
+      <p>
+        所有源码引用都钉在 Pacemaker {site.upstream.version}。Pacemaker 3.x 改了不少默认行为和命令，
+        本站的结论不保证适用于 3.x。
+      </p>
+    </article>
+  </div>
+</Base>

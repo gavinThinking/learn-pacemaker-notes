@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="zh">
+  <head>
+    <meta charset="utf-8" />
+    <title>OG card</title>
+    <link rel="stylesheet" href="../../src/styles/tokens.css" />
+    <style>
+      /*
+        分享卡片，1200×630 是 OG 的标准尺寸。用站里的令牌；字体由
+        scripts/build-assets.mjs 从 node_modules 注入，CJK 走系统字形
+        （Fraunces 不含汉字），所以这张图由浏览器渲染后截图。
+      */
+      * {
+        box-sizing: border-box;
+        margin: 0;
+      }
+
+      body {
+        width: 1200px;
+        height: 630px;
+        background: var(--paper);
+        font-family: var(--font-body);
+        color: var(--ink);
+        display: grid;
+        grid-template-columns: 1fr 400px;
+        overflow: hidden;
+      }
+
+      .left {
+        padding: 74px 0 74px 76px;
+        display: flex;
+        flex-direction: column;
+        justify-content: space-between;
+      }
+
+      .eyebrow {
+        font-family: var(--font-mono);
+        font-size: 20px;
+        letter-spacing: 0.16em;
+        color: var(--brand);
+      }
+
+      h1 {
+        font-family: var(--font-display);
+        font-size: 76px;
+        line-height: 1.18;
+        letter-spacing: -0.015em;
+      }
+
+      .sub {
+        font-size: 25px;
+        line-height: 1.65;
+        color: var(--ink-muted);
+        max-width: 30ch;
+        margin-top: 28px;
+      }
+
+      .foot {
+        display: flex;
+        align-items: baseline;
+        gap: 18px;
+        font-size: 21px;
+        color: var(--ink-subtle);
+      }
+
+      .foot strong {
+        color: var(--ink);
+        font-weight: 600;
+      }
+
+      .right {
+        background: var(--paper-muted);
+        border-left: 1px solid var(--line);
+        padding: 64px 52px;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        gap: 14px;
+      }
+
+      .step {
+        display: grid;
+        grid-template-columns: 40px 1fr;
+        align-items: baseline;
+        font-size: 23px;
+      }
+
+      .step span {
+        font-family: var(--font-mono);
+        color: var(--brand);
+        font-size: 20px;
+      }
+
+      .step small {
+        display: block;
+        font-size: 17px;
+        color: var(--ink-subtle);
+        margin-top: 2px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="left">
+      <p class="eyebrow">对照 PACEMAKER 2.1.11</p>
+      <div>
+        <h1>集群为什么<br />这样做决定。</h1>
+        <p class="sub">
+          一份公开的学习记录：从成员和 quorum 一路学到调度、fencing 和 PostgreSQL 主备。
+        </p>
+      </div>
+      <p class="foot">
+        <strong>学 Pacemaker 手记</strong>
+        <span>learn-pacemaker-notes.vercel.app</span>
+      </p>
+    </div>
+
+    <div class="right">
+      <p class="step"><span>1</span><b>事件<small>节点掉线、monitor 失败</small></b></p>
+      <p class="step"><span>2</span><b>DC 取 CIB 快照</b></p>
+      <p class="step"><span>3</span><b>调度器算出动作图</b></p>
+      <p class="step"><span>4</span><b>执行或 fencing</b></p>
+      <p class="step"><span>5</span><b>结果写回 CIB</b></p>
+    </div>
+  </body>
+</html>

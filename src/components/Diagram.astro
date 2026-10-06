@@ -1,0 +1,136 @@
+---
+/**
+ * 架构图。源码是 `src/diagrams/*.mmd`，由 `npm run assets` 渲染成同名 .svg 入库，
+ * 这里在构建期内联——运行时零 JS。改了 .mmd 忘记重新生成，`make check` 会因为
+ * 源码哈希对不上而红。
+ *
+ * `verified` 是证据等级，必须显式给，不给默认当最低级：guess → docs → source。
+ * `gaps` 是这张图已知没画或没核对的东西，和图一起展示。
+ */
+interface Props {
+  /** `src/diagrams/` 下的文件名，不带扩展名。 */
+  name: string;
+  caption?: string;
+  verified?: "guess" | "docs" | "source";
+  /** 修订号；每次改图往前推一版，diff 就是理解变化的证据。 */
+  rev?: string;
+  gaps?: readonly string[];
+}
+
+const { name, caption, verified = "guess", rev, gaps = [] } = Astro.props;
+
+/**
+ * 用 Vite 的 `?raw` glob 在构建期把 SVG 内联进产物。
+ * 不能在运行时读文件——构建后的模块位于 dist/，相对路径会指错地方。
+ */
+const svgs = import.meta.glob<string>("../diagrams/*.svg", {
+  query: "?raw",
+  import: "default",
+  eager: true,
+});
+const svg = svgs[`../diagrams/${name}.svg`];
+if (!svg) {
+  throw new Error(
+    `找不到架构图 "${name}.svg"。改过 .mmd 的话先跑 npm run assets。`,
+  );
+}
+
+const LEVELS = [
+  { no: "guess", name: "预测图", desc: "读之前先画，等着被源码推翻。" },
+  { no: "docs", name: "仅依据文档", desc: "照官方文档画的，还没对过源码。" },
+  {
+    no: "source",
+    name: "已对照源码",
+    desc: "每个框每条边都在固定 tag 里核对过。",
+  },
+] as const;
+
+const current = LEVELS.findIndex((l) => l.no === verified);
+---
+
+<figure class="diagram">
+  {
+    rev && (
+      <div class="diagram__head">
+        <span class="diagram__rev">rev.{rev}</span>
+      </div>
+    )
+  }
+
+  <div class="diagram__canvas scroll-hint" set:html={svg} />
+
+  <figcaption>
+    <div class="ev">
+      <span class="ev__label">证据等级</span>
+      <div class="ev__track">
+        {
+          LEVELS.map((l, i) => (
+            <div
+              class="ev__step"
+              data-state={i < current ? "past" : i === current ? "now" : "next"}
+            >
+              <span class="ev__dot" />
+              <span class="ev__name">{l.name}</span>
+              <span class="ev__desc">{l.desc}</span>
+            </div>
+          ))
+        }
+      </div>
+    </div>
+
+    {
+      gaps.length > 0 && (
+        <div class="gaps">
+          <span class="gaps__label">已知缺口</span>
+          <ul class="gaps__list">
+            {gaps.map((g) => (
+              <li>{g}</li>
+            ))}
+          </ul>
+        </div>
+      )
+    }
+
+    {caption && <p class="diagram__caption">{caption}</p>}
+  </figcaption>
+</figure>
+
+<style>
+  .diagram {
+    margin: 2rem 0;
+    padding: 1.4rem;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-lg);
+    background: var(--paper-raised);
+  }
+
+  .diagram__head {
+    display: flex;
+    justify-content: flex-end;
+    margin-bottom: 0.4rem;
+  }
+
+  .diagram__rev {
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    color: var(--ink-subtle);
+    background: var(--paper-soft);
+    padding: 0.1rem 0.45rem;
+    border-radius: 4px;
+  }
+
+  .diagram__canvas :global(svg) {
+    display: block;
+    max-width: 100%;
+    height: auto;
+    margin-inline: auto;
+  }
+
+  .diagram__caption {
+    margin: 1.1rem 0 0;
+    padding-top: 1.1rem;
+    border-top: 1px solid var(--line);
+    color: var(--ink-muted);
+    font-size: 0.86rem;
+  }
+</style>

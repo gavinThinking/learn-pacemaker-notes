@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://learn-pacemaker-notes.vercel.app/sitemap-index.xml

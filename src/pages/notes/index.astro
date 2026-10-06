@@ -1,0 +1,46 @@
+---
+import { getCollection } from "astro:content";
+
+import Base from "../../layouts/Base.astro";
+
+const notes = (await getCollection("notes")).sort(
+  (a, b) => b.data.date.valueOf() - a.data.date.valueOf(),
+);
+---
+
+<Base title="手记" description="学 Pacemaker 的手记：每篇讲清一个阶段，引用固定版本的上游文档和源码。">
+  <div class="shell page-head">
+    <p class="eyebrow">手记</p>
+    <h1 class="display">一次一个阶段</h1>
+    <p class="lede">
+      每篇对应<a href="/roadmap/">学习路线</a>上的一个阶段，引用 Pacemaker-2.1.11 的文档或源码；
+      在实验平台上验证过的，附上验证摘要。
+    </p>
+  </div>
+
+  <div class="shell">
+    {
+      notes.length === 0 ? (
+        <p class="lede" style="padding-block:3rem">还没有手记。</p>
+      ) : (
+        <ul class="note-list">
+          {notes.map((note) => (
+            <li class="note-list__item">
+              <p class="note-meta">
+                <time datetime={note.data.date.toISOString()}>
+                  {note.data.date.toISOString().slice(0, 10)}
+                </time>
+                {` · ${note.data.layer}`}
+                {note.data.stage ? ` · 阶段 ${note.data.stage}` : ""}
+              </p>
+              <h2>
+                <a href={`/notes/${note.id}/`}>{note.data.title}</a>
+              </h2>
+              <p style="margin:0;color:var(--ink-muted)">{note.data.summary}</p>
+            </li>
+          ))}
+        </ul>
+      )
+    }
+  </div>
+</Base>

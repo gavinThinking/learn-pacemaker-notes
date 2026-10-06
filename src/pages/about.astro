@@ -1,0 +1,27 @@
+---
+import Base from "../layouts/Base.astro";
+import { site } from "../data/site";
+---
+
+<Base title="关于" description="谁在写这个站、为什么学 Pacemaker、怎么联系。">
+  <div class="shell page-head">
+    <p class="eyebrow">关于</p>
+    <h1 class="display">为什么学 Pacemaker</h1>
+  </div>
+
+  <div class="shell">
+    <article class="prose">
+      <p>
+        我是 {site.author}（{site.brand}），做过几年集群高可用和 PostgreSQL 持久化方面的工作，用 Pacemaker、Corosync
+        和 PAF 管过多节点集群里的资源。用过不等于懂：调度为什么这样算、fencing 为什么不能省、切换时数据怎么保证不丢，
+        这些需要回到文档和源码里重新学一遍，再在自己的集群上验证。这个站就是这个过程的公开记录。
+      </p>
+      <p>
+        同一个系列还有一个站：<a href="https://learn-pi-notes.vercel.app">学 Pi 手记</a>，学的是 Agent Runtime。
+      </p>
+      <p>
+        发现哪里写错了，欢迎<a href={`mailto:${site.email}`}>写信</a>告诉我。
+      </p>
+    </article>
+  </div>
+</Base>

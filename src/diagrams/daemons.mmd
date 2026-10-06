@@ -1,0 +1,26 @@
+flowchart LR
+  ev(["事件<br/>节点掉线 · monitor 失败"]) --> controld
+
+  subgraph dc["DC 所在节点"]
+    controld["pacemaker-controld<br/>被选为 DC"]
+    based["pacemaker-based<br/>CIB：配置 + 状态"]
+    schedulerd["pacemaker-schedulerd<br/>计算该做什么"]
+    attrd["pacemaker-attrd<br/>节点属性"]
+  end
+
+  subgraph any["动作落到的节点"]
+    execd["pacemaker-execd<br/>调用资源代理"]
+    fenced["pacemaker-fenced<br/>隔离节点"]
+  end
+
+  controld -- "1 取 CIB 快照" --> based
+  controld -- "2 请求计算" --> schedulerd
+  schedulerd -- "3 transition graph" --> controld
+  controld -- "4 启停资源" --> execd
+  controld -- "4 fencing" --> fenced
+  execd -- "5 结果写回" --> based
+  attrd -- "属性写进 CIB" --> based
+
+  corosync[("Corosync：成员 · quorum · 节点间消息")]
+  corosync -. "成员变化" .-> controld
+  based <-. "CIB 同步到其他节点" .-> corosync

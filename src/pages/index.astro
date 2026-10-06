@@ -1,0 +1,123 @@
+---
+import { getCollection } from "astro:content";
+
+import Base from "../layouts/Base.astro";
+import { layers, nextStage, progress, statusOf } from "../data/roadmap";
+import { site } from "../data/site";
+
+const notes = (await getCollection("notes"))
+  .sort((a, b) => b.data.date.valueOf() - a.data.date.valueOf())
+  .slice(0, 3);
+
+/** 一次调度回路，取自上游文档 Pacemaker Explained §1.2.2。 */
+const loop = [
+  { name: "事件发生", who: "节点掉线 · monitor 失败 · 配置变更" },
+  { name: "DC 取一份 CIB 快照", who: "pacemaker-controld → pacemaker-based" },
+  { name: "调度器算出动作图", who: "pacemaker-schedulerd" },
+  { name: "启停资源，必要时隔离节点", who: "pacemaker-execd · pacemaker-fenced" },
+  { name: "结果写回 CIB，进入下一轮", who: "pacemaker-based" },
+];
+---
+
+<Base>
+  <section class="shell hero">
+    <div>
+      <p class="eyebrow">对照 Pacemaker {site.upstream.version}</p>
+      <h1 class="display">集群为什么<br />这样做决定。</h1>
+      <p class="lede">
+        这是一份学 <a href={site.upstream.href}>Pacemaker {site.upstream.version}</a>
+        的公开记录。按它自己的分工拆开——谁还在集群里、共享状态放在哪、资源该放哪、动作失败了怎么办、
+        状态不确定时怎样不让两边同时写——每一层对照固定版本的文档和源码，并在一套自建的多节点集群上验证。
+      </p>
+
+      <a class="next-block" href="/roadmap/">
+        <span>
+          <span class="next-block__label">下一个阶段</span>
+          <span class="next-block__title">{nextStage.no} · {nextStage.title}</span>
+        </span>
+        <span class="next-block__arrow" aria-hidden="true">→</span>
+      </a>
+
+      <div class="hero__actions">
+        <a class="action" href="/roadmap/">看完整学习路线</a>
+        <a class="action action--quiet" href="/map/">先看架构地图</a>
+      </div>
+
+      <p class="facts">
+        <span>{progress.total} 个阶段</span>
+        <span>手记 {progress.notes} 篇</span>
+        <span>平台证据 {progress.evidence} 项</span>
+      </p>
+    </div>
+
+    <div class="loop">
+      <p class="loop__title">一次调度回路</p>
+      <ol class="loop__steps">
+      {
+        loop.map((step, i) => (
+          <li class="loop__step">
+            <span class="loop__no">{i + 1}</span>
+            <span class="loop__name">{step.name}</span>
+            <span class="loop__who">{step.who}</span>
+          </li>
+        ))
+      }
+      </ol>
+    </div>
+  </section>
+
+  <section class="shell section">
+    <h2 class="section__title">按 Pacemaker 自己的分工拆</h2>
+    <p class="lede">
+      不按手册目录读，按「这一层要成立，必须先懂哪一层」读。下面每张卡片后面的数字是这一层发了几篇手记。
+    </p>
+
+    <div class="cards" style="margin-top:1.6rem">
+      {
+        layers.map((layer) => (
+          <a class="card" href="/roadmap/">
+            <span class="card__no">
+              {layer.no} · {layer.stages.filter((s) => statusOf(s) !== "todo").length}/
+              {layer.stages.length}
+            </span>
+            <h3>{layer.name}</h3>
+            <p>{layer.goal}</p>
+          </a>
+        ))
+      }
+    </div>
+  </section>
+
+  {
+    notes.length > 0 && (
+      <section class="shell section">
+        <h2 class="section__title">最新手记</h2>
+        <ul class="note-list">
+          {notes.map((note) => (
+            <li class="note-list__item">
+              <p class="note-meta">
+                <time datetime={note.data.date.toISOString()}>
+                  {note.data.date.toISOString().slice(0, 10)}
+                </time>
+                {note.data.stage ? ` · 阶段 ${note.data.stage}` : ""}
+              </p>
+              <h2>
+                <a href={`/notes/${note.id}/`}>{note.data.title}</a>
+              </h2>
+              <p style="margin:0;color:var(--ink-muted)">{note.data.summary}</p>
+            </li>
+          ))}
+        </ul>
+      </section>
+    )
+  }
+
+  <section class="shell section">
+    <h2 class="section__title">这个站不声称什么</h2>
+    <p class="lede">
+      我是学习者，不是 Pacemaker 的维护者，本站与 ClusterLabs 无隶属关系。
+      实验平台是个人搭的练习集群，没有经过生产验证。哪些结论核对过源码、哪些只依据文档、哪些还没验证，
+      都写在<a href="/evidence/">证据边界</a>里。
+    </p>
+  </section>
+</Base>

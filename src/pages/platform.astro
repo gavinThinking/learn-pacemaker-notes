@@ -1,0 +1,62 @@
+---
+import Base from "../layouts/Base.astro";
+import { site } from "../data/site";
+
+/** 平台状态快照的日期。平台仓库私有，这里只放摘要，更新时连同日期一起改。 */
+const asOf = "2026-10-06";
+---
+
+<Base
+  title="实验平台"
+  description="验证手记结论用的自建多节点 Pacemaker 集群：规模、资源类型、要演练的故障和当前进度。"
+>
+  <div class="shell page-head">
+    <p class="eyebrow">实验平台 · 状态截至 {asOf}</p>
+    <h1 class="display">在自己的集群上验证</h1>
+    <p class="lede">
+      手记里的结论，能在集群上复现的都会去复现。为此我单独搭了一套练习集群：用 Pacemaker
+      {site.upstream.version} 从源码编译，节点是本机虚拟机里的系统容器，一条命令从零拉起。
+      平台代码是私有仓库，本站只放从它导出的摘要和验证结果。
+    </p>
+  </div>
+
+  <div class="shell">
+    <article class="prose">
+      <h2>规模</h2>
+      <p>
+        目标是 4 组、每组 2 个节点，一共 8 个节点，管 9 类资源。先做 1 组 2 个节点的最小版本，跑通后再扩。
+      </p>
+
+      <h2>用到的 Pacemaker 资源形态</h2>
+      <div class="table-scroll">
+        <table>
+          <thead>
+            <tr><th>形态</th><th>在平台上管什么</th><th>对应阶段</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>promotable clone</td><td>PostgreSQL 主备（PAF 管理）；一个一主多备的应用服务</td><td>07 · 14</td></tr>
+            <tr><td>clone</td><td>每组一份的独立数据库、容器服务、配置管理服务</td><td>07</td></tr>
+            <tr><td>普通资源</td><td>跟随主库或主服务漂移的浮动 IP、数据目录的文件系统挂载</td><td>05 · 06</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h2>要演练的故障</h2>
+      <ul>
+        <li>主库所在节点宕机：备节点接管数据目录、浮动 IP 跟着走</li>
+        <li>宕机节点重新加入集群</li>
+        <li>一整组掉线</li>
+        <li>网络分区：哪一侧保有 quorum、另一侧怎么处理</li>
+      </ul>
+
+      <h2>当前进度</h2>
+      <ul>
+        <li>Pacemaker {site.upstream.version} 已从源码编译，2 节点集群能一条命令拉起并取得 quorum，版本核对通过。</li>
+        <li>集群里还没有资源。下一步是第一组的 PostgreSQL 主备、数据目录挂载和浮动 IP。</li>
+      </ul>
+      <p>
+        平台上完成的验证会写进对应阶段的手记，并在<a href="/roadmap/">学习路线</a>的「平台证据」里标出来。
+      </p>
+    </article>
+  </div>
+</Base>

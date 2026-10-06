@@ -1,0 +1,152 @@
+---
+import "@fontsource-variable/fraunces";
+import "@fontsource-variable/inter";
+import "../styles/site.css";
+
+import { site } from "../data/site";
+
+interface Props {
+  title?: string;
+  description?: string;
+  /** 手记页传进来，用于生成 BlogPosting 结构化数据。 */
+  published?: Date;
+}
+
+const { title, description = site.description, published } = Astro.props;
+const pageTitle = title ? `${title} · ${site.name}` : site.title;
+const path = Astro.url.pathname;
+const canonical = new URL(path, Astro.site);
+const ogImage = new URL("/og.png", Astro.site);
+
+/**
+ * 结构化数据。手记走 BlogPosting，其余页面走 WebSite。
+ * 没有它，日期和作者对搜索引擎不可读——富摘要一律拿不到。
+ */
+const jsonLd = published
+  ? {
+      "@context": "https://schema.org",
+      "@type": "BlogPosting",
+      headline: title,
+      description,
+      datePublished: published.toISOString(),
+      author: { "@type": "Person", name: site.author },
+      mainEntityOfPage: canonical.href,
+      image: ogImage.href,
+      inLanguage: "zh-Hans",
+    }
+  : {
+      "@context": "https://schema.org",
+      "@type": "WebSite",
+      name: site.name,
+      description: site.description,
+      url: new URL("/", Astro.site).href,
+      author: { "@type": "Person", name: site.author },
+      inLanguage: "zh-Hans",
+    };
+
+/** 导航高亮：多页站里点击结果必须可预判。 */
+const isCurrent = (href: string) => path === href || path.startsWith(href);
+---
+
+<!doctype html>
+<html lang="zh-Hans">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{pageTitle}</title>
+    <meta name="description" content={description} />
+    <meta name="author" content={site.author} />
+    <meta name="theme-color" content="#fdfcf9" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#16150f" media="(prefers-color-scheme: dark)" />
+
+    <meta property="og:title" content={pageTitle} />
+    <meta property="og:description" content={description} />
+    <meta property="og:type" content={published ? "article" : "website"} />
+    <meta property="og:url" content={canonical} />
+    <meta property="og:site_name" content={site.name} />
+    <meta property="og:locale" content="zh_CN" />
+    <meta property="og:image" content={ogImage} />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta property="og:image:alt" content={`${site.name} —— ${site.sub}`} />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content={pageTitle} />
+    <meta name="twitter:description" content={description} />
+    <meta name="twitter:image" content={ogImage} />
+
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="canonical" href={canonical} />
+    <link
+      rel="alternate"
+      type="application/rss+xml"
+      title={`${site.name} · 手记`}
+      href="/rss.xml"
+    />
+    <script type="application/ld+json" set:html={JSON.stringify(jsonLd)} is:inline
+    ></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#main">跳到主要内容</a>
+
+    <header class="topbar">
+      <div class="shell topbar__inner">
+        <a class="brand" href="/" aria-label={`${site.name} —— ${site.sub}`}>
+          <!-- 标记 = 一段心跳波形：集群靠心跳判断谁还活着。 -->
+          <svg
+            class="brand__mark"
+            width="26"
+            height="26"
+            viewBox="0 0 26 26"
+            aria-hidden="true"
+          >
+            <path
+              d="M3 14h5l2.4-6 4.2 12 2.4-6H23"
+              fill="none"
+              stroke="var(--brand)"
+              stroke-width="2.1"
+              stroke-linecap="round"
+              stroke-linejoin="round"></path>
+          </svg>
+          <span class="brand__text">
+            <span class="brand__name">{site.name}</span>
+            <span class="brand__sub">{site.sub}</span>
+          </span>
+        </a>
+
+        <nav class="nav scroll-hint" aria-label="主导航">
+          {
+            site.nav.map((item) => (
+              <a
+                href={item.href}
+                aria-current={isCurrent(item.href) ? "page" : undefined}
+              >
+                {item.label}
+              </a>
+            ))
+          }
+        </nav>
+      </div>
+    </header>
+
+    <main id="main">
+      <slot />
+    </main>
+
+    <footer class="footer">
+      <div class="shell footer__inner">
+        <p style="margin:0">
+          {site.name} —— {site.tagline}。作者 {site.author}（{site.brand}）。<br
+          />
+          学习对象为 <a href={site.upstream.href}
+            >{site.upstream.name} {site.upstream.version}</a
+          >；本站与 ClusterLabs 无隶属关系。
+        </p>
+        <div class="footer__links">
+          <a href="/rss.xml">订阅</a>
+          <a href="/evidence/">证据边界</a>
+          <a href={`mailto:${site.email}`}>写信</a>
+        </div>
+      </div>
+    </footer>
+  </body>
+</html>

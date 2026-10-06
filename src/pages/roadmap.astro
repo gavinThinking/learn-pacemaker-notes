@@ -1,0 +1,92 @@
+---
+import Base from "../layouts/Base.astro";
+import { layers, progress, statusLabels, statusOf } from "../data/roadmap";
+import { site } from "../data/site";
+---
+
+<Base
+  title="学习路线"
+  description="按 Pacemaker 自己的分工拆出的 6 层 14 个阶段，以及每个阶段的手记和平台证据。"
+>
+  <div class="shell page-head">
+    <p class="eyebrow">6 层 · 对照 Pacemaker {site.upstream.version}</p>
+    <h1 class="display">学到哪了，一页说清</h1>
+    <p class="lede">
+      从下往上排：成员与 quorum 是地基，调度决策是核心，fencing 是安全底线，最后用在 PostgreSQL 主备上。
+      每个阶段看两样产出——手记发了没有、实验平台上有没有对应的验证。只是读过资料不算产出。
+    </p>
+
+    <div class="progress-bar" aria-hidden="true">
+      {
+        layers
+          .flatMap((layer) => layer.stages)
+          .map((s) => <span class="progress-bar__cell" data-status={statusOf(s)} />)
+      }
+    </div>
+    <p class="note-meta">
+      {progress.total} 个阶段 · 手记 {progress.notes} 篇 · 平台证据 {progress.evidence} 项
+    </p>
+  </div>
+
+  <div class="shell">
+    {
+      layers.map((layer) => (
+        <section class="part">
+          <header class="part__head">
+            <span class="part__no">{layer.no}</span>
+            <div>
+              <h2 class="part__name">{layer.name}</h2>
+              <p class="part__goal">{layer.goal}</p>
+            </div>
+            <span class="part__count">
+              {layer.stages.filter((s) => statusOf(s) === "done").length}/{layer.stages.length}
+            </span>
+          </header>
+
+          {layer.stages.map((stage) => (
+            <article class="cp" data-status={statusOf(stage)}>
+              <span class="cp__no">{stage.no}</span>
+              <div>
+                <h3 class="cp__title">{stage.title}</h3>
+                <p class="cp__summary">{stage.summary}</p>
+                {stage.evidence && <span class="cp__caveat">平台证据：{stage.evidence}</span>}
+                {(stage.upstream || stage.note) && (
+                  <p class="cp__links">
+                    {stage.upstream && (
+                      <a href={`${site.upstream.href}/${stage.upstream}`}>上游 · {stage.upstream}</a>
+                    )}
+                    {stage.note && <a href={`/notes/${stage.note}/`}>读手记 →</a>}
+                  </p>
+                )}
+              </div>
+              <span class="pill" data-status={statusOf(stage)}>
+                {statusLabels[statusOf(stage)]}
+              </span>
+            </article>
+          ))}
+        </section>
+      ))
+    }
+  </div>
+
+  <div class="shell section">
+    <h2 class="section__title">状态怎么定</h2>
+    <div class="cards">
+      <article class="card">
+        <span class="card__no">手记已发</span>
+        <h3>手记和平台证据都有</h3>
+        <p>手记发布了，实验平台上也有对应的验证摘要。</p>
+      </article>
+      <article class="card">
+        <span class="card__no">进行中</span>
+        <h3>两样里有一样</h3>
+        <p>手记先发了、平台还没验证，或者反过来。旁边写着有的是哪一样。</p>
+      </article>
+      <article class="card">
+        <span class="card__no">未开始</span>
+        <h3>两样都还没有</h3>
+        <p>没有手记也没有平台证据，就是未开始。</p>
+      </article>
+    </div>
+  </div>
+</Base>

@@ -1,0 +1,989 @@
+@import "./tokens.css";
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  min-width: 320px;
+  background: var(--paper);
+  scroll-behavior: smooth;
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  color: var(--ink);
+  background: var(--paper);
+  font-family: var(--font-body);
+  font-size: 16px;
+  line-height: 1.7;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+a {
+  color: var(--brand);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}
+
+a:hover {
+  color: var(--brand-hover);
+}
+
+:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 3px;
+  border-radius: 3px;
+}
+
+code,
+pre,
+kbd {
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+}
+
+/* ---------- 骨架 ---------- */
+
+.shell {
+  width: min(100% - 2.5rem, var(--shell));
+  margin-inline: auto;
+}
+
+.skip-link {
+  position: absolute;
+  left: -9999px;
+}
+
+.skip-link:focus {
+  left: 1rem;
+  top: 1rem;
+  z-index: 20;
+  padding: 0.5rem 0.9rem;
+  background: var(--paper-raised);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+}
+
+.topbar {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  height: 58px;
+  display: flex;
+  align-items: center;
+  background: color-mix(in srgb, var(--paper) 88%, transparent);
+  backdrop-filter: saturate(1.4) blur(10px);
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.topbar__inner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.55rem;
+  color: var(--ink);
+  text-decoration: none;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.brand__mark {
+  flex: none;
+}
+
+.brand__text {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.25;
+}
+
+.brand__name {
+  font-family: var(--font-display);
+  font-size: 1.02rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.brand__sub {
+  font-size: 0.68rem;
+  font-weight: 400;
+  letter-spacing: 0.02em;
+  color: var(--ink-subtle);
+}
+
+.nav {
+  display: flex;
+  align-items: center;
+  gap: 1.4rem;
+  font-size: 0.9rem;
+}
+
+.nav a {
+  color: var(--ink-muted);
+  text-decoration: none;
+  padding-block: 0.35rem;
+  border-bottom: 2px solid transparent;
+}
+
+.nav a:hover {
+  color: var(--ink);
+}
+
+.nav a[aria-current="page"] {
+  color: var(--ink);
+  border-bottom-color: var(--brand);
+}
+
+/*
+ * 窄屏保持单行：字标不换行，导航自己横向滚动。
+ * 这比把导航折成第二行更稳——顶栏高度固定，也不需要 JS 汉堡菜单。
+ */
+@media (max-width: 760px) {
+  .topbar__inner {
+    gap: 0.85rem;
+  }
+  .brand {
+    flex: none;
+    gap: 0.45rem;
+  }
+  .brand__name {
+    white-space: nowrap;
+    font-size: 0.95rem;
+  }
+  .brand__sub {
+    display: none;
+  }
+  .nav {
+    flex: 1;
+    /* 必须 flex-start：溢出时向右裁切，第一项「学习路线」才不会被藏到字标底下。 */
+    justify-content: flex-start;
+    flex-wrap: nowrap;
+    gap: 1rem;
+    font-size: 0.82rem;
+    overflow-x: auto;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+    mask-image: linear-gradient(to right, #000 88%, transparent);
+  }
+  .nav::-webkit-scrollbar {
+    display: none;
+  }
+  .nav a {
+    white-space: nowrap;
+  }
+}
+
+.footer {
+  margin-top: 6rem;
+  border-top: 1px solid var(--line-soft);
+  padding-block: 2.5rem 3.5rem;
+  color: var(--ink-subtle);
+  font-size: 0.85rem;
+}
+
+.footer__inner {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem 2rem;
+  align-items: baseline;
+  justify-content: space-between;
+}
+
+.footer__links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1.2rem;
+}
+
+/* ---------- 排版 ---------- */
+
+.display {
+  font-family: var(--font-display);
+  font-weight: 600;
+  line-height: 1.16;
+  letter-spacing: -0.015em;
+  margin: 0;
+}
+
+.eyebrow {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--brand);
+  border: 1px solid var(--brand-soft);
+  background: var(--brand-light);
+  border-radius: 999px;
+  padding: 0.3rem 0.75rem;
+}
+
+.lede {
+  color: var(--ink-muted);
+  font-size: 1.05rem;
+  max-width: var(--measure);
+}
+
+.page-head {
+  padding-block: 4.5rem 2.5rem;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.page-head h1 {
+  font-size: clamp(2rem, 5vw, 2.9rem);
+  margin-block: 1rem 0.9rem;
+}
+
+/* ---------- 首页 ---------- */
+
+.hero {
+  display: grid;
+  grid-template-columns: minmax(0, 1.05fr) minmax(0, 0.95fr);
+  gap: 3.5rem;
+  align-items: center;
+  padding-block: 5.5rem 4rem;
+}
+
+.hero h1 {
+  font-size: clamp(2.4rem, 6vw, 4rem);
+  margin-block: 1.25rem 1.4rem;
+}
+
+.hero__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1.6rem;
+  margin-top: 2rem;
+}
+
+.action {
+  font-weight: 500;
+  color: var(--ink);
+  text-decoration: none;
+  border-bottom: 2px solid var(--brand);
+  padding-bottom: 0.2rem;
+}
+
+.action--quiet {
+  border-bottom-color: var(--line);
+  color: var(--ink-muted);
+}
+
+.action:hover {
+  border-bottom-color: var(--brand-hover);
+  color: var(--ink);
+}
+
+.facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1.5rem;
+  margin-top: 2.5rem;
+  font-family: var(--font-mono);
+  font-size: 0.76rem;
+  color: var(--ink-subtle);
+}
+
+@media (max-width: 900px) {
+  .hero {
+    grid-template-columns: 1fr;
+    gap: 2.5rem;
+    padding-block: 3.5rem 2.5rem;
+  }
+}
+
+.section {
+  padding-block: 3.5rem;
+  border-top: 1px solid var(--line-soft);
+}
+
+.section__title {
+  font-family: var(--font-display);
+  font-size: 1.45rem;
+  margin: 0 0 0.6rem;
+}
+
+.cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 1.25rem;
+  margin-top: 2rem;
+}
+
+.card {
+  display: block;
+  padding: 1.6rem;
+  background: var(--paper-raised);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-card);
+  text-decoration: none;
+  color: inherit;
+  transition:
+    transform 0.18s ease,
+    box-shadow 0.18s ease;
+}
+
+a.card:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-elevated);
+}
+
+.card__no {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  letter-spacing: 0.12em;
+  color: var(--ink-subtle);
+}
+
+.card h3 {
+  font-family: var(--font-display);
+  font-size: 1.15rem;
+  margin: 0.6rem 0 0.5rem;
+}
+
+.card p {
+  margin: 0;
+  color: var(--ink-muted);
+  font-size: 0.92rem;
+}
+
+/* ---------- 笔记 ---------- */
+
+.note-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.note-list__item {
+  padding-block: 1.6rem;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.note-list__item h2 {
+  font-family: var(--font-display);
+  font-size: 1.35rem;
+  margin: 0.35rem 0 0.5rem;
+}
+
+.note-list__item h2 a {
+  color: inherit;
+  text-decoration: none;
+}
+
+.note-list__item h2 a:hover {
+  color: var(--brand);
+}
+
+.note-meta {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  color: var(--ink-subtle);
+  text-transform: uppercase;
+}
+
+/* 正文列与页头共用同一条左基线；`.shell` 负责居中外框，`.prose` 只负责行长。 */
+.prose {
+  max-width: var(--measure);
+  margin-inline: 0;
+  padding-block: 2.5rem;
+}
+
+.prose h2 {
+  font-family: var(--font-display);
+  font-size: 1.5rem;
+  margin: 2.6rem 0 0.9rem;
+  scroll-margin-top: 5rem;
+}
+
+.prose h3 {
+  font-family: var(--font-display);
+  font-size: 1.18rem;
+  margin: 2rem 0 0.7rem;
+}
+
+.prose p,
+.prose li {
+  color: var(--ink-muted);
+}
+
+.prose strong {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.prose blockquote {
+  margin: 1.6rem 0;
+  padding: 0.2rem 0 0.2rem 1.2rem;
+  border-left: 3px solid var(--brand-soft);
+  color: var(--ink-muted);
+}
+
+.prose pre {
+  padding: 1.1rem 1.2rem;
+  overflow-x: auto;
+  background: var(--paper-muted);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  line-height: 1.6;
+}
+
+.prose :not(pre) > code {
+  padding: 0.12em 0.38em;
+  background: var(--paper-soft);
+  border-radius: 4px;
+}
+
+.prose table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.92rem;
+}
+
+.prose th,
+.prose td {
+  padding: 0.6rem 0.7rem;
+  border-bottom: 1px solid var(--line-soft);
+  text-align: left;
+  vertical-align: top;
+}
+
+.prose th {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.table-scroll {
+  overflow-x: auto;
+}
+
+.evidence-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1.2rem;
+  margin-top: 2rem;
+  padding-top: 1.4rem;
+  border-top: 1px solid var(--line-soft);
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+}
+
+.callout {
+  padding: 1.1rem 1.3rem;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--amber);
+  border-radius: var(--radius);
+  background: var(--amber-light);
+  color: var(--ink-muted);
+  font-size: 0.92rem;
+}
+
+.callout strong {
+  color: var(--ink);
+}
+
+/* ---------- 学习路线 ---------- */
+
+.progress-bar {
+  display: flex;
+  gap: 3px;
+  margin: 1.6rem 0 0.7rem;
+}
+
+.progress-bar__cell {
+  flex: 1;
+  height: 6px;
+  border-radius: 2px;
+  background: var(--paper-soft);
+}
+
+.progress-bar__cell[data-status="done"] {
+  background: var(--brand);
+}
+
+.progress-bar__cell[data-status="partial"] {
+  background: var(--amber);
+}
+
+.part {
+  padding-block: 2.6rem;
+  border-top: 1px solid var(--line-soft);
+}
+
+.part__head {
+  display: grid;
+  grid-template-columns: 4rem minmax(0, 1fr) auto;
+  gap: 1.2rem;
+  align-items: start;
+  margin-bottom: 1.4rem;
+}
+
+.part__no {
+  font-family: var(--font-mono);
+  font-size: 1.5rem;
+  color: var(--ink-subtle);
+  line-height: 1;
+  padding-top: 0.25rem;
+}
+
+.part__name {
+  font-family: var(--font-display);
+  font-size: 1.3rem;
+  margin: 0 0 0.3rem;
+}
+
+.part__goal {
+  margin: 0;
+  color: var(--ink-muted);
+  font-size: 0.94rem;
+}
+
+.part__count {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  color: var(--ink-subtle);
+  white-space: nowrap;
+}
+
+.cp {
+  display: grid;
+  grid-template-columns: 4rem minmax(0, 1fr) auto;
+  gap: 1.2rem;
+  align-items: baseline;
+  padding: 1.1rem 0;
+  border-top: 1px dashed var(--line-soft);
+}
+
+.cp__no {
+  font-family: var(--font-mono);
+  font-size: 0.9rem;
+  color: var(--ink-subtle);
+}
+
+.cp[data-status="done"] .cp__no {
+  color: var(--brand);
+}
+
+.cp__title {
+  font-family: var(--font-display);
+  font-size: 1.05rem;
+  margin: 0 0 0.35rem;
+}
+
+.cp__summary {
+  margin: 0;
+  color: var(--ink-muted);
+  font-size: 0.92rem;
+}
+
+.cp__caveat {
+  display: block;
+  margin-top: 0.5rem;
+  padding-left: 0.7rem;
+  border-left: 2px solid var(--amber);
+  color: var(--ink-subtle);
+  font-size: 0.86rem;
+}
+
+.cp__links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.9rem;
+  margin-top: 0.6rem;
+  font-family: var(--font-mono);
+  font-size: 0.74rem;
+}
+
+.pill {
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  letter-spacing: 0.04em;
+  padding: 0.2rem 0.55rem;
+  border-radius: 999px;
+  white-space: nowrap;
+  border: 1px solid transparent;
+}
+
+.pill[data-status="done"] {
+  color: var(--brand);
+  background: var(--brand-light);
+  border-color: var(--brand-soft);
+}
+
+.pill[data-status="partial"] {
+  color: var(--amber);
+  background: var(--amber-light);
+}
+
+.pill[data-status="todo"] {
+  color: var(--ink-subtle);
+  background: var(--paper-muted);
+  border-color: var(--line);
+}
+
+@media (max-width: 720px) {
+  .part__head,
+  .cp {
+    grid-template-columns: 2.6rem minmax(0, 1fr);
+    gap: 0.9rem;
+  }
+  .cp > .pill {
+    grid-column: 2;
+    justify-self: start;
+    margin-top: 0.5rem;
+  }
+  .part__count {
+    grid-column: 2;
+  }
+}
+
+/* 首页主行动块：借文档站的做法，把「下一步做什么」做成一个不可错过的实体。 */
+.next-block {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1.5rem;
+  margin-top: 2.2rem;
+  padding: 1.15rem 1.4rem;
+  background: var(--ink);
+  color: var(--paper);
+  border-radius: var(--radius);
+  text-decoration: none;
+  transition: transform 0.18s ease;
+}
+
+.next-block:hover {
+  transform: translateY(-2px);
+  color: var(--paper);
+}
+
+.next-block__label {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  letter-spacing: 0.1em;
+  opacity: 0.65;
+}
+
+.next-block__title {
+  display: block;
+  margin-top: 0.3rem;
+  font-family: var(--font-display);
+  font-size: 1.08rem;
+}
+
+.next-block__arrow {
+  flex: none;
+  font-size: 1.2rem;
+}
+
+@media (prefers-color-scheme: dark) {
+  .next-block {
+    background: var(--paper-soft);
+    color: var(--ink);
+  }
+  .next-block:hover {
+    color: var(--ink);
+  }
+}
+
+.part__scope {
+  margin-left: 0.6rem;
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  font-weight: 400;
+  color: var(--ink-subtle);
+  white-space: nowrap;
+}
+
+/* 状态点：绿=已实现，琥珀=部分，空心=未开始。 */
+.sdot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+  background: var(--line);
+}
+
+.sdot[data-status="done"] {
+  background: var(--green);
+}
+
+.sdot[data-status="partial"] {
+  background: var(--amber);
+}
+
+.sdot[data-status="todo"] {
+  background: transparent;
+  box-shadow: inset 0 0 0 1px var(--ink-subtle);
+}
+
+/* ── 证据等级轨道（架构图） ───────────────────────────────── */
+.ev {
+  margin-top: 1.1rem;
+  padding-top: 1.1rem;
+  border-top: 1px solid var(--rule, var(--line));
+}
+
+.ev__label {
+  font-family: var(--font-mono);
+  font-size: 0.66rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-subtle);
+}
+
+.ev__track {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 0.9rem;
+  margin-top: 0.85rem;
+}
+
+.ev__step {
+  position: relative;
+  padding-top: 1.1rem;
+  border-top: 2px solid var(--line);
+}
+
+.ev__step[data-state="past"] {
+  border-top-color: var(--green);
+}
+
+.ev__step[data-state="now"] {
+  border-top-color: var(--amber);
+}
+
+.ev__dot {
+  position: absolute;
+  top: -6px;
+  inset-inline-start: 0;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--paper-raised);
+  border: 2px solid var(--line);
+}
+
+.ev__step[data-state="past"] .ev__dot {
+  background: var(--green);
+  border-color: var(--green);
+}
+
+.ev__step[data-state="now"] .ev__dot {
+  background: var(--amber);
+  border-color: var(--amber);
+  box-shadow: 0 0 0 4px var(--amber-light);
+}
+
+.ev__name {
+  display: block;
+  font-size: 0.85rem;
+  font-weight: 600;
+  margin-bottom: 0.2rem;
+}
+
+.ev__step[data-state="next"] .ev__name {
+  color: var(--ink-subtle);
+}
+
+.ev__desc {
+  display: block;
+  font-size: 0.78rem;
+  color: var(--ink-muted);
+}
+
+/* ── 已知缺口 ─────────────────────────────────────────────── */
+.gaps {
+  margin-top: 1.1rem;
+  padding-top: 1.1rem;
+  border-top: 1px solid var(--rule, var(--line));
+}
+
+.gaps__label {
+  font-family: var(--font-mono);
+  font-size: 0.66rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-subtle);
+}
+
+.gaps__list {
+  margin: 0.7rem 0 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 0.35rem;
+}
+
+.gaps__list li {
+  font-size: 0.86rem;
+  color: var(--ink-muted);
+  padding-inline-start: 1.15rem;
+  position: relative;
+}
+
+.gaps__list li::before {
+  content: "○";
+  position: absolute;
+  inset-inline-start: 0;
+  color: var(--rose);
+  font-size: 0.7rem;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   横向滚动的可发现性
+   -----------------------------------------------------------------
+   `overflow-x: auto` 在手机上没有滚动条，用户根本不知道内容还能划。
+   这里用 background-attachment: local/scroll 做纯 CSS 滚动阴影：
+   两侧的渐隐只在真的还有内容可滚时出现，滚到头自动消失，不需要 JS。
+   ═══════════════════════════════════════════════════════════════ */
+.scroll-hint {
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  /* 四层：左右两块「到头就被盖住」的实色 + 左右两片跟着滚的渐隐。 */
+  background-image:
+    linear-gradient(to right, var(--paper) 30%, transparent),
+    linear-gradient(to left, var(--paper) 30%, transparent),
+    linear-gradient(to right, rgba(34, 32, 27, 0.14), transparent),
+    linear-gradient(to left, rgba(34, 32, 27, 0.14), transparent);
+  background-position:
+    left center,
+    right center,
+    left center,
+    right center;
+  background-repeat: no-repeat;
+  background-size:
+    28px 100%,
+    28px 100%,
+    12px 100%,
+    12px 100%;
+  background-attachment: local, local, scroll, scroll;
+  scrollbar-width: thin;
+}
+
+/* 触屏上不显示滚动条，改用一行文字兜底说明——渐隐只是暗示，不是说明。 */
+.scroll-hint__note {
+  display: none;
+  margin: 0.5rem 0 0;
+  font-size: 0.76rem;
+  color: var(--ink-subtle);
+}
+
+@media (max-width: 720px) {
+  .scroll-hint__note {
+    display: block;
+  }
+}
+
+/* ── 顶部导航：窄屏可横划，且点击目标撑到 44px ─────────────── */
+@media (max-width: 860px) {
+  .nav {
+    gap: 1.1rem;
+    /* 让淡出贴着视口边，而不是停在 shell 的内边距上。 */
+    margin-inline-end: -1rem;
+    padding-inline-end: 1rem;
+
+    /*
+      顶栏是 88% 半透明 + backdrop-blur，实色渐隐会盖出一块更亮的补丁。
+      这里改用 mask 淡出内容本身——它不挑背景色，半透明和模糊都不影响。
+      窄屏下导航必定溢出，所以这个淡出是常驻提示，不需要判断滚动位置。
+    */
+    mask-image: linear-gradient(
+      to right,
+      #000 calc(100% - 30px),
+      rgba(0, 0, 0, 0.15)
+    );
+    background-image: none;
+    /* 触屏上的覆盖式滚动条会在顶栏留一道灰杠，交给上面的淡出来做提示。 */
+    scrollbar-width: none;
+  }
+
+  .nav::-webkit-scrollbar {
+    display: none;
+  }
+}
+
+.nav a {
+  /* WCAG 2.5.5 / HIG 最小点击目标 44px；原来只有 35px。 */
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  white-space: nowrap;
+}
+
+
+/* ── 首页右栏：一次调度回路 ───────────────────────────────── */
+.loop {
+  padding: 1.6rem 1.7rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--paper-raised);
+  box-shadow: var(--shadow-card);
+}
+
+.loop__title {
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  letter-spacing: 0.08em;
+  color: var(--ink-subtle);
+  margin: 0 0 1rem;
+}
+
+.loop__steps {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.loop__step {
+  display: grid;
+  grid-template-columns: 2rem minmax(0, 1fr);
+  gap: 0.2rem 0.6rem;
+  padding: 0.75rem 0;
+  border-top: 1px dashed var(--line-soft);
+}
+
+.loop__no {
+  font-family: var(--font-mono);
+  color: var(--brand);
+}
+
+.loop__name {
+  font-weight: 600;
+}
+
+.loop__who {
+  grid-column: 2;
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  color: var(--ink-subtle);
+}
