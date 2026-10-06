@@ -81,6 +81,7 @@ export const layers: Layer[] = [
         no: "06",
         title: "score 与 stickiness",
         summary: "分数怎么累加、INFINITY 怎么参与运算、资源为什么不愿意挪回去。",
+        note: "06-scores-stickiness",
       },
       {
         no: "07",

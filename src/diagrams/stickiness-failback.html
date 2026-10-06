@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>node1 修好回来，资源迁不迁回去</title>
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400&family=Inter:wght@400;600&display=swap" rel="stylesheet">
+  <style>
+    /* 和 src/styles/tokens.css 同一套令牌；嵌进站点后 SVG 直接用站点的变量。 */
+    :root {
+      --paper: #fdfcf9; --paper-raised: #ffffff; --paper-muted: #f6f3ec; --ink: #22201b; --ink-muted: #6a6459;
+      --ink-subtle: #7a7365; --line: #e7e1d5; --brand: #2f5fd0; --brand-light: #eef2fb;
+      --font-display: Fraunces, "Songti SC", "Noto Serif SC", Georgia, serif;
+      --font-body: Inter, -apple-system, BlinkMacSystemFont, "PingFang SC", "Noto Sans SC", sans-serif;
+      --font-mono: ui-monospace, SFMono-Regular, Consolas, monospace;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --paper: #16150f; --paper-raised: #1f1e17; --paper-muted: #1d1c15; --ink: #f2efe6; --ink-muted: #b3ac9c;
+        --ink-subtle: #8b8474; --line: #34322a; --brand: #8fabf0; --brand-light: #1c2237;
+      }
+    }
+    body { margin: 0; padding: 3rem 1rem; background: var(--paper-raised); color: var(--ink); font-family: var(--font-body); }
+    .frame { max-width: 640px; margin: 0 auto; }
+    .eyebrow { font: 500 0.66rem var(--font-mono); letter-spacing: 0.18em; text-transform: uppercase; color: var(--ink-subtle); margin: 0 0 0.5rem; }
+    h1 { font: 400 1.75rem/1.2 var(--font-display); margin: 0 0 1.5rem; }
+    .canvas { overflow-x: auto; }
+  </style>
+</head>
+<body>
+<main class="frame">
+  <p class="eyebrow">Score table · 阶段 06</p>
+  <h1>node1 修好回来，资源迁不迁回去</h1>
+  <div class="canvas">
+<svg id="sfb" viewBox="0 0 640 392" style="min-width: 560px" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="sfb-title sfb-desc">
+  <title id="sfb-title">node1 修好回来，资源迁不迁回去</title>
+  <desc id="sfb-desc">同一个资源，location 约束让它偏好 node1，加 100 分。node1 故障后资源被迁到 node2，现在跑在 node2 上，node1 修好重新上线。左边一组 stickiness 是 200：node1 合计 100，node2 合计 200，资源留在 node2。右边一组 stickiness 是 50：node1 合计 100，node2 合计 50，资源迁回 node1，多一次停止和启动。</desc>
+  <defs>
+    <style>
+      #sfb {
+        --sfb-paper: var(--paper-raised, #ffffff);
+        --sfb-node: var(--paper, #fdfcf9);
+        --sfb-paper-2: var(--paper-muted, #f6f3ec);
+        --sfb-ink: var(--ink, #22201b);
+        --sfb-muted: var(--ink-muted, #6a6459);
+        --sfb-soft: var(--ink-subtle, #7a7365);
+        --sfb-rule: var(--line, #e7e1d5);
+        --sfb-accent: var(--brand, #2f5fd0);
+        --sfb-tint: var(--brand-light, #eef2fb);
+        --sfb-sans: var(--font-body, "Inter Variable", Inter, -apple-system, "PingFang SC", "Noto Sans SC", sans-serif);
+        --sfb-mono: var(--font-mono, ui-monospace, SFMono-Regular, Consolas, monospace);
+      }
+      #sfb .sfb-bg { fill: var(--sfb-paper); }
+      #sfb .sfb-band { fill: var(--sfb-paper-2); }
+      #sfb .sfb-step { fill: var(--sfb-node); stroke: var(--sfb-ink); stroke-width: 1; }
+      #sfb .sfb-end { fill: color-mix(in srgb, var(--sfb-ink) 3%, var(--sfb-node)); stroke: color-mix(in srgb, var(--sfb-ink) 30%, transparent); stroke-width: 1; }
+      #sfb .sfb-focal { fill: var(--sfb-tint); stroke: var(--sfb-accent); stroke-width: 1.2; }
+      #sfb .sfb-arrow { fill: none; stroke: var(--sfb-muted); stroke-width: 1.2; }
+      #sfb .sfb-dashed { stroke-dasharray: 5 4; }
+      #sfb .sfb-head { fill: var(--sfb-muted); }
+      #sfb .sfb-mask { fill: var(--sfb-paper); }
+      #sfb .sfb-name { font: 600 12px var(--sfb-sans); fill: var(--sfb-ink); }
+      #sfb .sfb-sub { font: 400 10px var(--sfb-sans); fill: var(--sfb-muted); }
+      #sfb .sfb-mono { font: 400 9px var(--sfb-mono); fill: var(--sfb-muted); }
+      #sfb .sfb-tag { font: 600 9px var(--sfb-mono); fill: var(--sfb-soft); letter-spacing: 0.08em; }
+      #sfb .sfb-label { font: 400 10px var(--sfb-sans); fill: var(--sfb-muted); }
+      #sfb .sfb-rule { stroke: var(--sfb-rule); stroke-width: 0.8; }
+    </style>
+    <marker id="sfb-arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+      <polygon class="sfb-head" points="0 0, 8 3, 0 6"/>
+    </marker>
+  </defs>
+
+  <rect class="sfb-bg" width="640" height="392"/>
+
+  <!-- 分组表头 -->
+  <rect class="sfb-band" x="284" y="24" width="160" height="28" rx="4"/>
+  <text class="sfb-name" x="364" y="43" text-anchor="middle">stickiness = 200</text>
+  <rect class="sfb-band" x="456" y="24" width="160" height="28" rx="4"/>
+  <text class="sfb-name" x="536" y="43" text-anchor="middle">stickiness = 50</text>
+
+  <text class="sfb-tag" x="24" y="78">分数来源</text>
+  <text class="sfb-mono" x="324" y="78" text-anchor="middle">node1</text>
+  <text class="sfb-mono" x="404" y="78" text-anchor="middle">node2</text>
+  <text class="sfb-mono" x="496" y="78" text-anchor="middle">node1</text>
+  <text class="sfb-mono" x="576" y="78" text-anchor="middle">node2</text>
+  <line class="sfb-rule" x1="24" y1="90" x2="616" y2="90"/>
+
+  <!-- 行 1 -->
+  <text class="sfb-name" x="24" y="114">起点</text>
+  <text class="sfb-sub" x="24" y="130">symmetric-cluster=true，每个节点 0 分</text>
+  <text class="sfb-sub" x="324" y="122" text-anchor="middle">0</text>
+  <text class="sfb-sub" x="404" y="122" text-anchor="middle">0</text>
+  <text class="sfb-sub" x="496" y="122" text-anchor="middle">0</text>
+  <text class="sfb-sub" x="576" y="122" text-anchor="middle">0</text>
+  <line class="sfb-rule" x1="24" y1="144" x2="616" y2="144"/>
+
+  <!-- 行 2 -->
+  <text class="sfb-name" x="24" y="168">location 偏好 node1</text>
+  <text class="sfb-sub" x="24" y="184">rsc_location score=100</text>
+  <text class="sfb-sub" x="324" y="176" text-anchor="middle">+100</text>
+  <text class="sfb-sub" x="404" y="176" text-anchor="middle">—</text>
+  <text class="sfb-sub" x="496" y="176" text-anchor="middle">+100</text>
+  <text class="sfb-sub" x="576" y="176" text-anchor="middle">—</text>
+  <line class="sfb-rule" x1="24" y1="198" x2="616" y2="198"/>
+
+  <!-- 行 3 -->
+  <text class="sfb-name" x="24" y="222">stickiness 加给当前节点</text>
+  <text class="sfb-sub" x="24" y="238">资源现在跑在 node2</text>
+  <text class="sfb-sub" x="324" y="230" text-anchor="middle">—</text>
+  <text class="sfb-sub" x="404" y="230" text-anchor="middle">+200</text>
+  <text class="sfb-sub" x="496" y="230" text-anchor="middle">—</text>
+  <text class="sfb-sub" x="576" y="230" text-anchor="middle">+50</text>
+  <line class="sfb-rule" x1="24" y1="252" x2="616" y2="252"/>
+
+  <!-- 合计 -->
+  <text class="sfb-name" x="24" y="282">合计，取最高分</text>
+  <rect class="sfb-step" x="296" y="264" width="56" height="28" rx="6"/>
+  <text class="sfb-name" x="324" y="282" text-anchor="middle">100</text>
+  <rect class="sfb-focal" x="376" y="264" width="56" height="28" rx="6"/>
+  <text class="sfb-name" x="404" y="282" text-anchor="middle">200</text>
+  <rect class="sfb-focal" x="468" y="264" width="56" height="28" rx="6"/>
+  <text class="sfb-name" x="496" y="282" text-anchor="middle">100</text>
+  <rect class="sfb-step" x="548" y="264" width="56" height="28" rx="6"/>
+  <text class="sfb-name" x="576" y="282" text-anchor="middle">50</text>
+
+  <!-- 结果 -->
+  <text class="sfb-name" x="24" y="324">结果</text>
+  <text class="sfb-sub" x="364" y="324" text-anchor="middle">留在 node2，不动</text>
+  <text class="sfb-sub" x="536" y="324" text-anchor="middle">迁回 node1：先停再启</text>
+
+  <!-- 图例 -->
+  <line class="sfb-rule" x1="24" y1="348" x2="616" y2="348"/>
+  <rect class="sfb-focal" x="24" y="364" width="24" height="12" rx="2"/>
+  <text class="sfb-label" x="54" y="374">资源会放在这个节点</text>
+  <text class="sfb-label" x="200" y="374">— 表示这一项不给这个节点加分</text>
+</svg>
+  </div>
+</main>
+</body>
+</html>

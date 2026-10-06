@@ -1,0 +1,233 @@
+---
+title: 分数与 stickiness：INFINITY 怎么算，资源为什么不愿意挪回去
+date: 2026-10-06
+summary: 调度器给每个资源在每个节点上记一个整数分数，所有来源——集群默认、location、节点健康、stickiness、失败次数、colocation——都往这一个数上加。INFINITY 就是 1000000，加法有三条特殊规则：负无穷压倒一切，正无穷压倒有限值，有限值相加超出范围就截到 ±INFINITY。stickiness 只加给资源当前正在跑的那个节点，所以节点修好回来时，资源迁不迁回去，就看 stickiness 和 location 偏好谁大。
+layer: L3
+stage: "06"
+upstream:
+  - label: lib/common/scores.c：分数的加法和解析
+    href: https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/common/scores.c#L39-L190
+  - label: lib/pacemaker/pcmk_scheduler.c：stickiness 和失败上限在哪一步加
+    href: https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pacemaker/pcmk_scheduler.c#L112-L295
+  - label: lib/pengine/complex.c：resource-stickiness 怎么解析、默认值
+    href: https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pengine/complex.c#L649-L670
+  - label: lib/pacemaker/pcmk_sched_colocation.c：跟随者的分数按比例传回给被跟随者
+    href: https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pacemaker/pcmk_sched_colocation.c#L1654-L1946
+  - label: cts/scheduler/xml/colocation-vs-stickiness.xml：stickiness 压过有限分数的反向 colocation
+    href: https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/cts/scheduler/xml/colocation-vs-stickiness.xml
+links:
+  - to: "05"
+    why: 第 5 讲讲三类约束各往分数表里加什么；本篇讲这些分数怎么相加、相加后怎么比较。
+  - to: "04"
+    why: location 规则按节点属性给分，节点健康也是读 attrd 写进去的 #health- 开头的属性，再换算成分数。
+  - to: "07"
+    why: clone 不设 stickiness 时默认是 1；promotable 资源选主时比的是另一套分数（promotion score），在第 7 讲。
+  - to: "08"
+    why: crm_simulate -s 能把调度器算出的每一个分数打印出来，第 8 讲用它离线重放一次决策。
+  - to: "11"
+    why: 失败次数达到 migration-threshold 后，调度器给这个节点加 -INFINITY（标签 __fail_limit__），任何正分都救不回来；完整的失败处理在第 11 讲。
+  - to: "14"
+    why: PAF 部署通常给主库资源设较大的 stickiness，切换后旧主修好回来，新主不会被自动挪回去，避免第二次停机。
+---
+
+第 5 讲讲了三类约束分别往分数表里加什么。本篇讲这张分数表本身：分数是什么数、怎么相加、INFINITY 参与运算时有什么规矩，以及 stickiness 这个最常用、也最常被误解的分数来源。
+
+本篇的版本：Pacemaker 2.1.11。源码结论附链接，只依据文档的会单独说明。
+
+## 一句话
+
+每个资源在每个节点上只有一个整数分数，所有规则都往这个数上加，最后分数最高、且不是负数的节点得到资源。INFINITY 是 1000000，规则是「负无穷压倒正无穷」。stickiness 只加给资源当前所在的节点，它让「挪过去」要多付一笔分数：节点修好回来后资源迁不迁回去，比的是 location 偏好和 stickiness 谁大。
+
+## 分数是什么数
+
+分数是普通的 `int`。INFINITY 不是特殊值，就是 1000000（[`PCMK_SCORE_INFINITY`，`include/crm/common/scores.h` 第 24 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/include/crm/common/scores.h#L24)）。
+
+CIB 里写分数时，[`pcmk_parse_score`（`scores.c` 第 39–100 行）](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/common/scores.c#L39-L100)接受这几种写法：
+
+<div class="table-scroll">
+
+| 写法 | 得到的数 |
+| --- | --- |
+| `100`、`-50` | 原值 |
+| `5000000` | 超出范围，截到 `1000000` |
+| `INFINITY`、`+INFINITY` | `1000000` |
+| `-INFINITY` | `-1000000` |
+| `red` / `yellow` / `green` | 节点健康对应的分数，见下文「节点健康」 |
+
+</div>
+
+打印时，绝对值达到 1000000 的分数写成 `INFINITY` 或 `-INFINITY`（[`pcmk_readable_score`，第 137 行起](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/common/scores.c#L137)）。
+
+## 加法的三条规矩
+
+所有分数都经同一个函数相加：[`pcmk__add_scores`（`scores.c` 第 167–190 行）](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/common/scores.c#L167-L190)。它按顺序检查三件事：
+
+1. 任何一边 ≤ -INFINITY，结果就是 -INFINITY；
+2. 否则任何一边 ≥ +INFINITY，结果就是 +INFINITY；
+3. 否则正常相加，结果超出 ±1000000 就截到 ±INFINITY。
+
+先查负、后查正，这个顺序就是「负无穷压倒正无穷」的来源：
+
+<div class="table-scroll">
+
+| 算式 | 结果 | 为什么 |
+| --- | --- | --- |
+| `100 + 200` | `300` | 普通相加 |
+| `INFINITY + (-500)` | `INFINITY` | 第 2 条：正无穷吞掉有限的负分 |
+| `100 + (-INFINITY)` | `-INFINITY` | 第 1 条 |
+| `INFINITY + (-INFINITY)` | `-INFINITY` | 第 1 条先查，负的赢 |
+| `600000 + 600000` | `INFINITY` | 第 3 条：超出范围截断 |
+
+</div>
+
+这个顺序是故意的：-INFINITY 表示「绝对不能放在这里」，例如这个节点失败次数已到上限、或者管理员明确禁止。任何「想放在这里」的理由都不该覆盖它。
+
+另一个后果：INFINITY 不叠加。一个节点上有两条 INFINITY 的偏好，和只有一条没有区别；两个节点都是 INFINITY 时，它们打平，按第 5 讲的「分数相同时怎么挑」往下比。
+
+## 一个节点上的分数从哪来
+
+调度器给一个资源的每个节点算分数，大致按这个顺序往上加（第 5 讲图里的第 3、4 步）：
+
+<div class="table-scroll">
+
+| 来源 | 加多少 | 加给哪个节点 | 源码 |
+| --- | --- | --- | --- |
+| 集群默认 | `symmetric-cluster=true` 时 0，否则不加（节点不在允许列表里） | 所有节点 | [`complex.c` 第 999–1001 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pengine/complex.c#L999-L1001) |
+| 节点健康 | 按健康策略换算，见下文 | 健康分不为 0 的节点 | [`pcmk_sched_nodes.c` 第 361–410 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pacemaker/pcmk_sched_nodes.c#L361-L410) |
+| location 约束 | 约束里写的分数 | 约束或规则命中的节点 | 第 5 讲 |
+| stickiness | `resource-stickiness` 的值 | 资源当前正在跑的那一个节点 | [`pcmk_scheduler.c` 第 185–224 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pacemaker/pcmk_scheduler.c#L185-L224) |
+| 失败上限 | -INFINITY | 失败次数达到 `migration-threshold` 的节点 | [`pcmk_scheduler.c` 第 112–141 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pacemaker/pcmk_scheduler.c#L112-L141) |
+| colocation | 按被跟随者的位置算，见下文 | 选节点时动态加 | 第 5 讲 |
+
+</div>
+
+每一项都经 [`resource_location`（`lib/pengine/utils.c` 第 359–420 行）](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pengine/utils.c#L359-L420)落到资源的允许节点表里，内部就是 `pcmk__add_scores(原分数, 新分数)`。所以上面那三条加法规矩对每一种来源都成立。
+
+几项值得单独说：
+
+- **失败上限**：资源在某节点上的失败次数达到 `migration-threshold`，调度器给这个节点加 -INFINITY，标签是 `__fail_limit__`。如果这次运算里已经安排了清除失败次数的动作，就先不加。失败次数从哪来、怎么清，在第 11 讲。
+- **节点健康**：节点属性里以 `#health-` 开头的那些（例如硬件监控代理写的 `#health-ipmi`），值可以是数字或 red / yellow / green。`node-health-strategy` 决定颜色换算成多少分（[`pe_health.c` 第 24–56 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pengine/pe_health.c#L24-L56)）：
+
+<div class="table-scroll">
+
+| `node-health-strategy` | red | yellow | green |
+| --- | --- | --- | --- |
+| `none`（默认） | 不生效 | 不生效 | 不生效 |
+| `migrate-on-red` | -INFINITY | 0 | 0 |
+| `only-green` | -INFINITY | -INFINITY | 0 |
+| `progressive` / `custom` | 取 `node-health-red` | 取 `node-health-yellow` | 取 `node-health-green` |
+
+</div>
+
+一个节点所有健康属性换算后相加，得到这个节点的健康分；不为 0 时，作为 location 分数加给每个资源。资源设了 `allow-unhealthy-nodes=true` 的，负的健康分不加给它（`pcmk_sched_nodes.c` 第 397–405 行）。
+
+## stickiness：只加给当前节点
+
+`resource-stickiness` 是资源的 meta 属性，可以逐个资源设，也可以在 `rsc_defaults` 里给所有资源设默认值。
+
+默认值和特例（[`complex.c` 第 649–670 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pengine/complex.c#L649-L670)、[第 796 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pengine/complex.c#L796)、[`clone.c` 第 431–432 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pengine/clone.c#L431-L432)）：
+
+- 不设，就是 0：资源没有任何「留在原地」的倾向。
+- 值写错（不是合法分数），按 0 处理，日志里有一条配置警告。
+- clone 不设时，调度器自己补成 1，让实例不要无缘无故在节点之间换来换去。
+- 显式写 `default` 从 2.1.8 起已废弃，直接不设就行。
+
+[`apply_stickiness`](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pacemaker/pcmk_scheduler.c#L185-L224) 决定这个分数加不加、加给谁。三个条件同时满足才加：
+
+1. 资源是 managed（没被设成不受集群管理）；
+2. stickiness ≥ 1；
+3. 资源当前恰好在一个节点上运行。没在跑，就没有「原地」可留；同时在多个节点上跑（异常情况），也不加。
+
+不对称集群（`symmetric-cluster=false`）还有第四条：当前节点必须仍在资源的允许列表里。否则管理员删掉了允许这个节点的 location 约束，资源却靠 stickiness 赖着不走。
+
+满足条件时，调度器把 stickiness 加到当前节点的分数上，debug 日志是 `Resource <资源> has <分数> stickiness on <节点>`。
+
+对于 group 和 clone 这类由多个资源组成的资源，`apply_stickiness` 对每个成员分别调用。group 的每个成员各自在当前节点上得到一份 stickiness，而第 5 讲讲过 group 选节点时把成员的分数合起来比，所以 group 留在原地的力量大约是「正在跑的成员数 × stickiness」。这一点是读源码推出来的，没有用回归用例逐项核对过。
+
+## 节点修好回来：迁不迁回去
+
+最常见的问题：资源平时偏好 node1，node1 故障时资源迁到了 node2；node1 修好重新上线，资源会不会自己迁回去？
+
+<Diagram
+  name="stickiness-failback"
+  caption="location 偏好 node1 给 100 分，stickiness 加给资源当前所在的 node2。stickiness 比 100 大就留下，比 100 小就迁回去。"
+  verified="source"
+  rev="1"
+  gaps={[
+    "只画了 location 和 stickiness 两个来源，没画 colocation 带来的分数",
+    "两边相等时（stickiness 也是 100）不由分数决定，按第 5 讲的打平规则往下比",
+  ]}
+/>
+
+迁回去不是免费的：资源要先在 node2 停、再在 node1 启，对 PostgreSQL 这类服务就是又一次中断。所以多数生产配置会让 stickiness 大于 location 偏好，让资源留在新节点，等维护窗口再手动迁回。
+
+<div class="table-scroll">
+
+| 想要的行为 | 配置 |
+| --- | --- |
+| 修好就自动迁回 | stickiness 小于 location 偏好，或者都不设只写 location |
+| 修好也不动，手动迁 | stickiness 大于 location 偏好 |
+| 无论如何都不动，除非节点不可用 | stickiness 设 INFINITY |
+
+</div>
+
+stickiness 设成 INFINITY 有副作用：它会压过任何有限分数的偏好和反向 colocation（下一节的例子），只有 -INFINITY（失败上限、禁止规则、节点不可用）能让资源离开。
+
+## 回归用例：stickiness 压过有限分数的反向 colocation
+
+上游回归用例 [`colocation-vs-stickiness`](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/cts/scheduler/xml/colocation-vs-stickiness.xml) 正好演示 INFINITY 的加法规矩：
+
+- `rsc_defaults` 里 `resource-stickiness=INFINITY`（第 171 行）；
+- 一条 colocation：`group1` 和 `group2` 分开放，分数 -500（第 139 行），意思是「最好别在一起」；
+- 两个 group 现在都跑在 rhel7-5 上，其他节点有的 standby，有的在线。
+
+调度器的分数输出（`cts/scheduler/scores/colocation-vs-stickiness.scores`）里，两个 group 的每个成员在 rhel7-5 上都是 `INFINITY`，在其他节点上是 0：
+
+```text
+pcmk__group_assign: dummy1 allocation score on rhel7-4: 0
+pcmk__group_assign: dummy1 allocation score on rhel7-5: INFINITY
+```
+
+-500 加到 INFINITY 上还是 INFINITY（加法第 2 条），所以 Transition Summary 是空的：调度器什么也不做，两个 group 继续挤在同一个节点上。想让「分开放」生效，要么把 colocation 设成 -INFINITY（它会压过正无穷），要么把 stickiness 调成有限值、且小于 500。
+
+## colocation 怎么把分数传回给被跟随者
+
+第 5 讲说过，colocation 先给被跟随的资源（primary）选节点，再改跟随者（dependent）的分数。其实 primary 选节点之前，也会把跟随者的意愿按比例算进来（[`pcmk__add_dependent_scores`，`pcmk_sched_colocation.c` 第 1923–1946 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pacemaker/pcmk_sched_colocation.c#L1923-L1946)）：
+
+- 比例 = colocation 分数 ÷ 1000000。INFINITY 的 colocation 比例是 1，-500 的比例是 -0.0005。
+- primary 在节点 X 上加上「跟随者在 X 上的分数 × 比例」，四舍五入成整数（[第 1726–1729 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pacemaker/pcmk_sched_colocation.c#L1726-L1729)）。
+- 原分数和比例都不为 0、但乘积四舍五入成了 0 时，强制给 ±1，不让小分数被吃掉（[第 1735–1741 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pacemaker/pcmk_sched_colocation.c#L1735-L1741)）。
+- 跟随者的意愿传不传回去，看 colocation 的 `influence`：显式写了就按它；没写就看跟随者的 meta 属性 `critical`，默认是 true，即传回去（[`unpack_influence`，第 418–436 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pacemaker/pcmk_sched_colocation.c#L418-L436)）。
+
+例子：VIP 跟着 pgsql，colocation 分数 INFINITY。管理员给 VIP 加了一条 location：node2 上 +50。pgsql 选节点时，node2 额外得到 50 × 1 = 50 分。如果 colocation 只是 100，比例是 0.0001，50 × 0.0001 = 0.005，四舍五入是 0，按上面第三条强制成 +1。
+
+这个机制让 primary 在其他条件打平时，倾向于放在跟随者也愿意去的节点上；但比例小的 colocation 传回去的分数很小，很少能改变结论。
+
+## 回到主线
+
+主线里 node1（主库所在）断电，pgsql 的主库角色要换到 node2。分数在这里的作用：
+
+- 断电节点不可用，调度器根本不会选它（第 5 讲的 `pcmk__node_available`），不需要靠 -INFINITY；
+- 主库提升到 node2 后，pgsql 的 Promoted 实例在 node2 上运行，VIP 跟着走；
+- 之后 node1 修好重新加入，作为备库启动。主库角色要不要切回 node1，比的是 promotion score，不是本篇的分配分数，在第 7 讲；PAF 怎么设这个分数，在第 14 讲。
+
+## 读状态时看哪里
+
+<div class="table-scroll">
+
+| 想知道 | 命令或位置 |
+| --- | --- |
+| 当前集群每个资源在每个节点上的分数 | `crm_simulate -sL`：`-L` 读当前 CIB，`-s` 打印分数 |
+| 分数的一行长什么样 | `<函数名>: <资源> allocation score on <节点>: <分数>`，promotable 还有 `<资源> promotion score on <节点>: <分数>` |
+| stickiness 加给了哪个节点 | debug 日志 `Resource ... has ... stickiness on ...` |
+| 某节点被失败上限禁掉了 | `crm_mon --failcounts`（`-f`）看失败次数；分数输出里该节点是 `-INFINITY` |
+| 集群默认的 stickiness | `crm_attribute --type rsc_defaults --name resource-stickiness --query`（`--type` 可取 `rsc_defaults`，见 [`crm_attribute.c` 第 270 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/tools/crm_attribute.c#L270)） |
+
+</div>
+
+`crm_simulate -s` 的输出格式见 [`pe_output.c` 第 2749 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pengine/pe_output.c#L2749)。第 8 讲用它离线重放上游的回归用例。
+
+## 还没核对的
+
+- group 留在原地的力量约等于「正在跑的成员数 × stickiness」，是从 `apply_stickiness` 递归加给每个成员推出来的，没有用回归用例逐项验证。
+- 节点健康属性由谁写、多久写一次，取决于具体的健康监控代理，本篇只依据文档，没有对照代理源码。
