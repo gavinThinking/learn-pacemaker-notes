@@ -1,0 +1,214 @@
+---
+title: clone 与 promotable：实例怎么分，主由谁选
+date: 2026-10-06
+summary: clone 是一份资源定义同时跑多个实例，调度器先尽量让实例留在原节点，再把剩下的平均分到其他节点。promotable clone 在分完节点之后多一步选主：每个实例的提升优先级来自节点属性 master-<资源名>，这个值通常由资源代理自己写；没有这个属性就是 -1，不会被提升。调度器按优先级排序，从高到低取满 promoted-max 个，跳过优先级为负、所在节点主已满、失去 quorum 且策略为 freeze 的实例。
+layer: L3
+stage: "07"
+upstream:
+  - label: lib/pacemaker/pcmk_sched_clone.c：clone 分配节点的入口
+    href: https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pacemaker/pcmk_sched_clone.c#L37-L92
+  - label: lib/pacemaker/pcmk_sched_instances.c：实例怎么分到节点
+    href: https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pacemaker/pcmk_sched_instances.c#L781-L856
+  - label: lib/pacemaker/pcmk_sched_promotable.c：promotion score 和选主
+    href: https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pacemaker/pcmk_sched_promotable.c#L557-L1063
+  - label: lib/pengine/clone.c：clone 的 meta 属性和默认值
+    href: https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pengine/clone.c#L355-L440
+  - label: cts/scheduler/xml/promoted-score-startup.xml：两节点 PostgreSQL 冷启动选主
+    href: https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/cts/scheduler/xml/promoted-score-startup.xml
+links:
+  - to: "06"
+    why: 实例分配用的是第 6 讲那张分数表；clone 不设 stickiness 时默认 1，就是为了让实例别无故换节点。
+  - to: "04"
+    why: promotion score 就是一个节点属性（master-<资源名>），资源代理用 crm_attribute --promotion 经 attrd 写进 status 段。
+  - to: "05"
+    why: 让 VIP 跟着主库走，靠的是 with-rsc-role=Promoted 的 colocation；这类 colocation 在选主时也会反过来影响谁当主。
+  - to: "10"
+    why: promote、demote 是 OCF 协议里 promotable 资源才有的两个动作，资源代理还要在 monitor 里用返回码区分自己是主还是备。
+  - to: "13"
+    why: 失去 quorum 且 no-quorum-policy=freeze 时，调度器不提升任何新的主，已经是主的保持不动。
+  - to: "08"
+    why: crm_simulate -s 打印的 promotion score 那几行，就是本篇选主第 ⑤ 步看到的数；第 8 讲用回归用例离线重放。
+  - to: "14"
+    why: PAF 的资源代理在每次 monitor 里按 WAL 位置给备库写 promotion score，主库切换时谁的数据最新谁就排第一。
+---
+
+前两讲讲的调度都针对单个资源：一个资源，选一个节点。很多服务需要在多个节点上同时跑：每个节点都要挂载的文件系统、每个节点都要跑的监控代理，还有本系列的主角——一主多备的 PostgreSQL。Pacemaker 用 clone 表达「同一份定义跑多个实例」，用 promotable clone 表达「多个实例里选出一部分当主」。
+
+本篇的版本：Pacemaker 2.1.11。源码结论附链接，只依据文档的会单独说明。
+
+## 一句话
+
+clone 的每个实例在调度器眼里就是一个普通资源，名字后面加 `:0`、`:1` 编号，按第 6 讲的分数分配节点。promotable clone 多一步：分完节点后，按节点属性 `master-<资源名>` 给每个实例排序，从高到低提升 `promoted-max` 个（默认 1 个）为主。这个属性通常由资源代理自己写，所以「谁当主」实际上是资源代理告诉调度器的。
+
+## clone 的 meta 属性
+
+clone 的行为全靠 meta 属性控制（[`clone.c` 第 355–440 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pengine/clone.c#L355-L440)）：
+
+<div class="table-scroll">
+
+| meta 属性 | 默认值 | 含义 |
+| --- | --- | --- |
+| `clone-max` | 集群节点数 | 一共最多跑几个实例 |
+| `clone-node-max` | 1 | 一个节点上最多几个实例 |
+| `globally-unique` | false | 实例之间有没有区别；false 叫匿名 clone |
+| `resource-stickiness` | 1（clone 不设时自动补） | 让实例别无故换节点 |
+| `interleave` | false | 和另一个 clone 有 order / colocation 时，是否只看同一节点上的实例 |
+| `notify` | false | 实例动作前后，是否通知所有实例 |
+| `promotable` | false | 是否要选主 |
+| `promoted-max` | 1 | promotable 才有：一共最多几个主 |
+| `promoted-node-max` | 1 | promotable 才有：一个节点上最多几个主 |
+
+</div>
+
+匿名 clone 的实例之间没有区别，节点上跑着「某个实例」就行，所以 `clone-node-max` 大于 1 会被忽略并强制成 1，配置日志里有一条错误（[第 392–399 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pengine/clone.c#L392-L399)）。PostgreSQL 的 promotable clone 就是匿名的：每个节点一个实例，实例叫 `pgsqld:0` 还是 `pgsqld:1` 不重要。
+
+`promoted-max` 和 `promoted-node-max` 在 2.0 之前叫 `master-max` 和 `master-node-max`，旧名字仍能用，日志会提示废弃。
+
+## 实例怎么分到节点
+
+[`pcmk__clone_assign`（`pcmk_sched_clone.c` 第 37–92 行）](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pacemaker/pcmk_sched_clone.c#L37-L92)是 clone 分配节点的入口，和第 5 讲讲的单个资源一样，先处理 colocation：自己跟随的资源先分配，跟随自己的资源的意愿按比例加进来。然后交给 [`pcmk__assign_instances`（`pcmk_sched_instances.c` 第 781–856 行）](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pacemaker/pcmk_sched_instances.c#L781-L856)，分两轮：
+
+1. **先留在原地**。算出每个节点的「理想实例数」= `clone-max` ÷ 可用节点数（至少 1）。逐个实例看：它现在跑的节点还能用，且这个节点上的实例数没超过理想值，就直接把它留在那里。
+2. **剩下的按分数分**。还没分到节点的实例，按第 6 讲的规则选分数最高的节点，同时遵守 `clone-node-max`。分满 `clone-max` 个之后，剩下的实例在所有节点上加 -INFINITY（标签 `collective_limit_reached`），即不运行。
+
+第一轮是 clone 不来回搬的关键：三节点集群、`clone-max=3`，一个节点挂了又回来，它上面的实例在别处没地方去（另外两个节点各已有一个，匿名 clone 一个节点只能一个），回来的节点重新启动一个实例即可，已经在跑的两个不动。
+
+## promotable：分完节点再选主
+
+promotable clone 在上面的流程里多两处：分配之前把 promotion score 加进节点分数，分配之后选主（[`pcmk__set_instance_roles`，`pcmk_sched_promotable.c` 第 1043–1063 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pacemaker/pcmk_sched_promotable.c#L1043-L1063)）。
+
+<Diagram
+  name="promotable-selection"
+  caption="promotion score 先影响实例落在哪，再决定谁当主。第 ③ 步的分数通常由资源代理写，所以选主的依据其实来自资源代理。"
+  verified="source"
+  rev="1"
+  gaps={[
+    "没画 cloned group：一个 group 的 promotion score 是所有成员之和，任何一个成员不能提升，整组都不提升",
+    "没画不受管理（unmanaged）的实例：已经是主的照样保持为主，不受第 ⑤ 步的数量限制",
+    "没画 rsc_ticket：需要 ticket 才能提升的资源，没拿到 ticket 时在第 ④ 步被禁掉",
+  ]}
+/>
+
+逐步对照源码：
+
+- **①** [`pcmk__add_promotion_scores`（第 754–800 行）](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pacemaker/pcmk_sched_promotable.c#L754-L800)：每个实例在每个可用节点上的 promotion score，只要是正数就加到节点分数上。效果是：适合当主的节点更可能分到实例。
+- **③** [`set_instance_priority`（第 902–985 行）](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pacemaker/pcmk_sched_promotable.c#L902-L985)：只看会运行的实例，优先级 = 它所在节点上的 promotion score。**节点上根本没有这个属性时，优先级是 -1**（第 946 行），源码注释写明了用意：没有分数也没有约束，就不要提升任何实例。然后加上 `rsc-role=Promoted` 的 location 约束分数和这个实例自己跟随别人的 colocation。
+- **④** [`sort_promotable_instances`（第 427–467 行）](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pacemaker/pcmk_sched_promotable.c#L427-L467)：再把「跟随 Promoted 角色的资源」的意愿按比例加进来——例如 VIP 带着 `with-rsc-role=Promoted` 的 colocation，VIP 想去的节点就多一点分。然后排序：分数高的在前；打平时，当前角色更高（已经是主）的在前（[`cmp_promotable_instance`，第 252–297 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pacemaker/pcmk_sched_promotable.c#L252-L297)）。
+- **⑤** [`set_instance_role`（第 994–1034 行）](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pacemaker/pcmk_sched_promotable.c#L994-L1034) 和 [`node_to_be_promoted_on`（第 165–239 行）](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pacemaker/pcmk_sched_promotable.c#L165-L239)：按顺序逐个检查，下面任何一条成立就跳过这个实例：
+
+<div class="table-scroll">
+
+| 跳过的条件 | 日志或源码位置 |
+| --- | --- |
+| 已经选够 `promoted-max` 个 | 第 1008–1011 行 |
+| 实例不会运行 | `can't be promoted because it won't be active` |
+| 优先级为负 | `can't be promoted because its promotion priority ... is negative`（第 202 行） |
+| 节点不能跑资源（standby、维护、正在关机等） | `can't be promoted because ... can't run resources` |
+| 这个节点上的主已达 `promoted-node-max` | `maximum promoted instances already`（第 233 行） |
+| 失去 quorum、`no-quorum-policy=freeze`，且实例现在还不是主 | `cannot be promoted without quorum`（第 1022 行） |
+
+</div>
+
+被选中的实例日志是 `Choosing <实例> (<当前角色>) on <节点> for promotion`（第 1029 行），最后一行汇总 `<资源>: Promoted N instances of a possible M`。没被选中的实例下一个角色是 Unpromoted：原来是主的就安排 demote，没在跑的就只 start。
+
+## promotion score 从哪来
+
+promotion score 就是一个名叫 `master-<资源名>` 的节点属性（[`pcmk_promotion_score_name`，`lib/common/attrs.c` 第 92–101 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/common/attrs.c#L92-L101)）。2.1.11 里属性名仍是 `master-` 前缀，和角色已改名 Promoted 无关。
+
+谁来写：
+
+- **资源代理**：最常见。资源代理在 monitor 或 notify 里调用 `crm_attribute --promotion -v <分数>`，不指定生命周期时写进 status 段（[`crm_attribute.c` 第 641–643 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/tools/crm_attribute.c#L641-L643)），也就是第 4 讲讲的临时属性，节点离开集群时被清掉。老的 `crm_master` 命令是同一件事的包装，已废弃。
+- **管理员**：写进 nodes 段的永久属性也算数，下面的回归用例就是这么做的。
+
+调度器不是在每个节点上都看这个分数（[`promotion_score_applies`，第 557–631 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pacemaker/pcmk_sched_promotable.c#L557-L631)）：
+
+<div class="table-scroll">
+
+| 情况 | 看不看这个节点的分数 |
+| --- | --- |
+| 匿名 clone 的这个实例正在这个节点上跑 | 看 |
+| 这个节点上没有实例在跑，但探测过（知道资源状态） | 看 |
+| 整个集群都还没探测过这个资源（例如集群刚启动） | 所有节点都看，好让永久属性生效 |
+| 其他节点已探测过，这个节点没探测过 | 不看 |
+
+</div>
+
+最后一行的用意：一个节点还没确认过资源在它上面是什么状态，它上面残留的分数不可信。
+
+## 回归用例：两节点 PostgreSQL 冷启动
+
+上游回归用例 [`promoted-score-startup`](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/cts/scheduler/xml/promoted-score-startup.xml) 正好是本系列的场景：两节点 srv1、srv2，一个 promotable clone `pgsql-ha`（里面是 `pgsqld`，资源代理 `ocf:heartbeat:pgsqlms`），一个 VIP `pgsql-master-ip`。配置要点：
+
+- nodes 段里写了永久属性：srv1 上 `master-pgsqld=1001`，srv2 上 `master-pgsqld=1000`（第 16、21 行）；
+- VIP 跟着主：`rsc_colocation rsc="pgsql-master-ip" with-rsc="pgsql-ha" with-rsc-role="Promoted" score="INFINITY"`（第 63 行）；
+- VIP 等 promote 完再启动：`rsc_order first-action="promote" then-action="start"`（第 64 行）；
+- 两个节点都在线，资源都没在跑，也都没探测过。
+
+调度器打印的分数（`cts/scheduler/scores/promoted-score-startup.scores`）：
+
+```text
+pcmk__clone_assign: pgsqld:0 allocation score on srv1: 1001
+pcmk__clone_assign: pgsqld:0 allocation score on srv2: 1000
+pcmk__primitive_assign: pgsqld:1 allocation score on srv1: -INFINITY
+pcmk__primitive_assign: pgsqld:1 allocation score on srv2: 1000
+pcmk__primitive_assign: pgsql-master-ip allocation score on srv2: -INFINITY
+pgsqld:0 promotion score on srv1: 1001
+pgsqld:1 promotion score on srv2: 1000
+```
+
+对着流程图读：
+
+- 第 1、2 行：第 ① 步把 1001 和 1000 加进了节点分数；
+- 第 3 行：`pgsqld:0` 已经分到 srv1，匿名 clone 一个节点只能一个实例，所以 `pgsqld:1` 在 srv1 上是 -INFINITY；
+- 第 5 行：VIP 跟随 Promoted 角色，srv2 不会有主，所以 VIP 在 srv2 上是 -INFINITY；
+- 最后两行：第 ③ 步的优先级，1001 > 1000，srv1 上的实例当主。
+
+Transition Summary 是：
+
+```text
+* Promote    pgsqld:0            ( Stopped -> Promoted srv1 )
+* Start      pgsqld:1            (                     srv2 )
+* Start      pgsql-master-ip     (                     srv1 )
+```
+
+## interleave 和 notify
+
+两个 clone 之间有 order 约束时，例如「先启动存储 clone，再启动数据库 clone」：
+
+- `interleave=false`（默认）：数据库 clone 的**每个**实例都要等存储 clone 的**所有**实例启动完；
+- `interleave=true`：每个实例只等**同一节点上**的那个存储实例。
+
+调度器看哪一边的 `interleave`：动作是 stop 或 demote 时看 first 那个 clone，其他动作看 then 那个 clone（[`can_interleave_actions`，`pcmk_sched_instances.c` 第 1451–1488 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pacemaker/pcmk_sched_instances.c#L1451-L1488)）。colocation 则只看跟随者的 `interleave`，并要求两边 `clone-node-max` 相同（[`can_interleave`，`pcmk_sched_clone.c` 第 201–229 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pacemaker/pcmk_sched_clone.c#L201-L229)）。
+
+`notify=true` 时，调度器在每个 start、stop、promote、demote 前后各安排一组 notify 动作，发给 clone 的所有实例，告诉它们「哪个节点上的实例要做什么」。对应的伪动作叫 pre、post、confirmed-pre、confirmed-post（[`lib/pengine/pe_notif.c`](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pengine/pe_notif.c#L276)）。PAF 依赖这个机制：promote 之前，各个备库在 pre-promote 通知里比较各自的 WAL 位置，第 14 讲细讲。
+
+## 回到主线
+
+主线里 node1（主库）断电，node2 上是备库实例。调度器这次运算里：
+
+1. node1 不可用，它上面的实例不会运行（等 fencing 确认后才算停下，第 12 讲）；
+2. node2 上的实例照常分配在 node2；
+3. 第 ③ 步：node2 上的 `master-pgsqld` 由 PAF 的资源代理平时在 monitor 里写好，是正数，优先级就是它；node1 的那份临时属性在它离开集群时已经被清掉；
+4. 第 ⑤ 步：两节点、`promoted-max=1`，node2 上的实例排第一，没有跳过的条件（配了 two_node 时这一侧保有 quorum，第 2 讲），被选中提升；
+5. VIP 的 colocation 跟着 Promoted 走，order 让它等 promote 完成再启动。
+
+如果 node2 上的资源代理从没写过 `master-pgsqld`，第 ③ 步的优先级是 -1，第 ⑤ 步跳过，集群里没有主——这是 promotable 资源「备库永远不提升」最常见的原因。
+
+## 读状态时看哪里
+
+<div class="table-scroll">
+
+| 想知道 | 命令或位置 |
+| --- | --- |
+| 各节点的 promotion score | `crm_mon -A` 显示节点属性，找 `master-<资源名>` |
+| 查或改某个节点上的分数 | `crm_attribute --promotion=<资源名> --node <节点> --query`（查）或 `-v <分数>`（改） |
+| 调度器算出的提升优先级 | `crm_simulate -sL`，看 `<实例> promotion score on <节点>: <分数>` 那几行 |
+| 谁被选为主 | 日志 `Choosing ... for promotion` 和 `Promoted N instances of a possible M` |
+| 为什么没被提升 | 调度器 trace 日志里的 `can't be promoted because ...` |
+
+</div>
+
+## 还没核对的
+
+- `crm_mon -A` 显示节点属性、`crm_attribute --promotion` 加 `--node` 的组合只依据文档和帮助文本，没有逐个对照输出代码。
+- notify 通知的环境变量（资源代理从哪些变量里读到「哪个节点要做什么」）本篇没有展开，第 14 讲讲 PAF 时对照。

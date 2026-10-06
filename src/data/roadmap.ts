@@ -87,6 +87,7 @@ export const layers: Layer[] = [
         no: "07",
         title: "clone 与 promotable",
         summary: "多实例资源怎么分布，主备角色由谁选、promotion score 从哪来。",
+        note: "07-clone-promotable",
       },
       {
         no: "08",

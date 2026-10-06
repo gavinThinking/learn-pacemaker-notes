@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>promotable clone 一次运算里怎么选出主</title>
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400&family=Inter:wght@400;600&display=swap" rel="stylesheet">
+  <style>
+    /* 和 src/styles/tokens.css 同一套令牌；嵌进站点后 SVG 直接用站点的变量。 */
+    :root {
+      --paper: #fdfcf9; --paper-raised: #ffffff; --paper-muted: #f6f3ec; --ink: #22201b; --ink-muted: #6a6459;
+      --ink-subtle: #7a7365; --line: #e7e1d5; --brand: #2f5fd0; --brand-light: #eef2fb;
+      --font-display: Fraunces, "Songti SC", "Noto Serif SC", Georgia, serif;
+      --font-body: Inter, -apple-system, BlinkMacSystemFont, "PingFang SC", "Noto Sans SC", sans-serif;
+      --font-mono: ui-monospace, SFMono-Regular, Consolas, monospace;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --paper: #16150f; --paper-raised: #1f1e17; --paper-muted: #1d1c15; --ink: #f2efe6; --ink-muted: #b3ac9c;
+        --ink-subtle: #8b8474; --line: #34322a; --brand: #8fabf0; --brand-light: #1c2237;
+      }
+    }
+    body { margin: 0; padding: 3rem 1rem; background: var(--paper-raised); color: var(--ink); font-family: var(--font-body); }
+    .frame { max-width: 640px; margin: 0 auto; }
+    .eyebrow { font: 500 0.66rem var(--font-mono); letter-spacing: 0.18em; text-transform: uppercase; color: var(--ink-subtle); margin: 0 0 0.5rem; }
+    h1 { font: 400 1.75rem/1.2 var(--font-display); margin: 0 0 1.5rem; }
+    .canvas { overflow-x: auto; }
+  </style>
+</head>
+<body>
+<main class="frame">
+  <p class="eyebrow">Flowchart · 阶段 07</p>
+  <h1>promotable clone 一次运算里怎么选出主</h1>
+  <div class="canvas">
+<svg id="psel" viewBox="0 0 640 600" style="min-width: 560px" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="psel-title psel-desc">
+  <title id="psel-title">promotable clone 一次运算里怎么选出主</title>
+  <desc id="psel-desc">调度器给 promotable clone 分配节点时分五步。第一步，把各节点上的 promotion score 加进 clone 的节点分数，让实例倾向于落在适合当主的节点上。第二步，分配实例：先让实例留在当前节点，再把剩下的按分数分到其他节点，受 clone-max 和 clone-node-max 限制。第三步，给每个会运行的实例算提升优先级：节点属性 master-资源名 的值，没有这个属性就是 -1，再加上只对 Promoted 角色生效的 location 和 colocation。第四步，按优先级从高到低排序。第五步，从头取实例：优先级为负、节点上的主已满 promoted-node-max、或失去 quorum 且 no-quorum-policy 为 freeze 时跳过，取满 promoted-max 个为止。被选中的实例提升为 Promoted，其余保持 Unpromoted。</desc>
+  <defs>
+    <style>
+      #psel {
+        --psel-paper: var(--paper-raised, #ffffff);
+        --psel-node: var(--paper, #fdfcf9);
+        --psel-paper-2: var(--paper-muted, #f6f3ec);
+        --psel-ink: var(--ink, #22201b);
+        --psel-muted: var(--ink-muted, #6a6459);
+        --psel-soft: var(--ink-subtle, #7a7365);
+        --psel-rule: var(--line, #e7e1d5);
+        --psel-accent: var(--brand, #2f5fd0);
+        --psel-tint: var(--brand-light, #eef2fb);
+        --psel-sans: var(--font-body, "Inter Variable", Inter, -apple-system, "PingFang SC", "Noto Sans SC", sans-serif);
+        --psel-mono: var(--font-mono, ui-monospace, SFMono-Regular, Consolas, monospace);
+      }
+      #psel .psel-bg { fill: var(--psel-paper); }
+      #psel .psel-band { fill: var(--psel-paper-2); }
+      #psel .psel-step { fill: var(--psel-node); stroke: var(--psel-ink); stroke-width: 1; }
+      #psel .psel-end { fill: color-mix(in srgb, var(--psel-ink) 3%, var(--psel-node)); stroke: color-mix(in srgb, var(--psel-ink) 30%, transparent); stroke-width: 1; }
+      #psel .psel-focal { fill: var(--psel-tint); stroke: var(--psel-accent); stroke-width: 1.2; }
+      #psel .psel-arrow { fill: none; stroke: var(--psel-muted); stroke-width: 1.2; }
+      #psel .psel-dashed { stroke-dasharray: 5 4; }
+      #psel .psel-head { fill: var(--psel-muted); }
+      #psel .psel-mask { fill: var(--psel-paper); }
+      #psel .psel-name { font: 600 12px var(--psel-sans); fill: var(--psel-ink); }
+      #psel .psel-sub { font: 400 10px var(--psel-sans); fill: var(--psel-muted); }
+      #psel .psel-mono { font: 400 9px var(--psel-mono); fill: var(--psel-muted); }
+      #psel .psel-tag { font: 600 9px var(--psel-mono); fill: var(--psel-soft); letter-spacing: 0.08em; }
+      #psel .psel-label { font: 400 10px var(--psel-sans); fill: var(--psel-muted); }
+      #psel .psel-rule { stroke: var(--psel-rule); stroke-width: 0.8; }
+    </style>
+    <marker id="psel-arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+      <polygon class="psel-head" points="0 0, 8 3, 0 6"/>
+    </marker>
+  </defs>
+
+  <rect class="psel-bg" width="640" height="600"/>
+
+  <!-- 连线 -->
+  <path class="psel-arrow" d="M320 80 V112" marker-end="url(#psel-arrow)"/>
+  <path class="psel-arrow" d="M320 168 V200" marker-end="url(#psel-arrow)"/>
+  <path class="psel-arrow" d="M320 256 V288" marker-end="url(#psel-arrow)"/>
+  <path class="psel-arrow" d="M320 344 V376" marker-end="url(#psel-arrow)"/>
+  <path class="psel-arrow" d="M256 432 V472" marker-end="url(#psel-arrow)"/>
+  <path class="psel-arrow" d="M440 432 V472" marker-end="url(#psel-arrow)"/>
+
+  <rect class="psel-mask" x="164" y="446" width="84" height="12" rx="2"/>
+  <text class="psel-label" x="244" y="456" text-anchor="end">取满 promoted-max</text>
+  <rect class="psel-mask" x="448" y="446" width="72" height="12" rx="2"/>
+  <text class="psel-label" x="452" y="456">其余 / 被跳过</text>
+
+  <!-- 1 -->
+  <rect class="psel-step" x="96" y="24" width="448" height="56" rx="6"/>
+  <text class="psel-name" x="320" y="47" text-anchor="middle">① promotion score 加进 clone 的节点分数</text>
+  <text class="psel-sub" x="320" y="65" text-anchor="middle">让实例倾向于落在适合当主的节点上</text>
+
+  <!-- 2 -->
+  <rect class="psel-step" x="96" y="112" width="448" height="56" rx="6"/>
+  <text class="psel-name" x="320" y="135" text-anchor="middle">② 分配实例到节点</text>
+  <text class="psel-sub" x="320" y="153" text-anchor="middle">先留在当前节点，再按分数分剩下的；受 clone-max、clone-node-max 限制</text>
+
+  <!-- 3 -->
+  <rect class="psel-focal" x="96" y="200" width="448" height="56" rx="6"/>
+  <text class="psel-name" x="320" y="223" text-anchor="middle">③ 每个实例算提升优先级</text>
+  <text class="psel-sub" x="320" y="241" text-anchor="middle">节点属性 master-资源名（没有就是 -1）＋ Promoted 角色的 location / colocation</text>
+
+  <!-- 4 -->
+  <rect class="psel-step" x="96" y="288" width="448" height="56" rx="6"/>
+  <text class="psel-name" x="320" y="311" text-anchor="middle">④ 按优先级从高到低排序</text>
+  <text class="psel-sub" x="320" y="329" text-anchor="middle">打平时现在已是主的排前面</text>
+
+  <!-- 5 -->
+  <rect class="psel-step" x="96" y="376" width="448" height="56" rx="6"/>
+  <text class="psel-name" x="320" y="399" text-anchor="middle">⑤ 从头取实例，逐个检查</text>
+  <text class="psel-sub" x="320" y="417" text-anchor="middle">跳过：优先级为负 · 节点上的主已满 · 失去 quorum 且策略为 freeze</text>
+
+  <!-- 结果 -->
+  <rect class="psel-focal" x="136" y="472" width="200" height="52" rx="20"/>
+  <text class="psel-name" x="236" y="494" text-anchor="middle">提升为 Promoted</text>
+  <text class="psel-mono" x="236" y="511" text-anchor="middle">promote</text>
+  <rect class="psel-end" x="360" y="472" width="160" height="52" rx="20"/>
+  <text class="psel-name" x="440" y="494" text-anchor="middle">保持 Unpromoted</text>
+  <text class="psel-mono" x="440" y="511" text-anchor="middle">start / 不动</text>
+
+  <!-- 图例 -->
+  <line class="psel-rule" x1="24" y1="552" x2="616" y2="552"/>
+  <rect class="psel-focal" x="24" y="568" width="24" height="12" rx="2"/>
+  <text class="psel-label" x="54" y="578">重点：③ 的分数决定谁被提升</text>
+  <rect class="psel-end" x="300" y="568" width="24" height="12" rx="6"/>
+  <text class="psel-label" x="330" y="578">结果</text>
+</svg>
+  </div>
+</main>
+</body>
+</html>
