@@ -1,0 +1,103 @@
+<svg data-lpn-source-sha="c68db5b04168c2a6" width="100%" id="cws" viewBox="0 0 640 560" style="min-width: 560px" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="cws-title cws-desc">
+  <title id="cws-title">一次 CIB 改动怎么到达每个节点，以及事后怎么核对</title>
+  <desc id="cws-desc">客户端向节点 A 的 based 提交一次改动。based 不在本地执行，而是把请求原样交给 Corosync CPG 广播。CPG 按同一个全序把它投递给每个节点，包括 A 自己；节点 A、B、C 各自执行这次改动，只有 A 回复发起的客户端。最后一次改动后 5 秒内没有新改动，DC 上的 based 就向所有节点要 CIB 摘要；摘要一致什么都不做，某个节点不一致就把整份 CIB 发给它，覆盖它的副本。</desc>
+  <defs>
+    <style>
+      #cws {
+        --cws-paper: var(--paper-raised, #ffffff);
+        --cws-node: var(--paper, #fdfcf9);
+        --cws-paper-2: var(--paper-muted, #f6f3ec);
+        --cws-ink: var(--ink, #22201b);
+        --cws-muted: var(--ink-muted, #6a6459);
+        --cws-soft: var(--ink-subtle, #7a7365);
+        --cws-rule: var(--line, #e7e1d5);
+        --cws-accent: var(--brand, #2f5fd0);
+        --cws-tint: var(--brand-light, #eef2fb);
+        --cws-sans: var(--font-body, "Inter Variable", Inter, -apple-system, "PingFang SC", "Noto Sans SC", sans-serif);
+        --cws-mono: var(--font-mono, ui-monospace, SFMono-Regular, Consolas, monospace);
+      }
+      #cws .cws-bg { fill: var(--cws-paper); }
+      #cws .cws-step { fill: var(--cws-node); stroke: var(--cws-ink); stroke-width: 1; }
+      #cws .cws-end { fill: color-mix(in srgb, var(--cws-ink) 3%, var(--cws-node)); stroke: color-mix(in srgb, var(--cws-ink) 30%, transparent); stroke-width: 1; }
+      #cws .cws-focal { fill: var(--cws-tint); stroke: var(--cws-accent); stroke-width: 1.2; }
+      #cws .cws-arrow { fill: none; stroke: var(--cws-muted); stroke-width: 1.2; }
+      #cws .cws-dashed { stroke-dasharray: 5 4; }
+      #cws .cws-head { fill: var(--cws-muted); }
+      #cws .cws-mask { fill: var(--cws-paper); }
+      #cws .cws-name { font: 600 12px var(--cws-sans); fill: var(--cws-ink); }
+      #cws .cws-sub { font: 400 10px var(--cws-sans); fill: var(--cws-muted); }
+      #cws .cws-mono { font: 400 9px var(--cws-mono); fill: var(--cws-muted); }
+      #cws .cws-label { font: 400 10px var(--cws-sans); fill: var(--cws-muted); }
+      #cws .cws-rule { stroke: var(--cws-rule); stroke-width: 0.8; }
+    </style>
+    <marker id="cws-arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+      <polygon class="cws-head" points="0 0, 8 3, 0 6"/>
+    </marker>
+  </defs>
+
+  <rect class="cws-bg" width="640" height="560"/>
+
+  <!-- 连线（先画，压在框下面） -->
+  <path class="cws-arrow" d="M240 52 H304" marker-end="url(#cws-arrow)"/>
+  <path class="cws-arrow" d="M460 80 V120" marker-end="url(#cws-arrow)"/>
+  <path class="cws-arrow" d="M112 176 V216" marker-end="url(#cws-arrow)"/>
+  <path class="cws-arrow" d="M320 176 V216" marker-end="url(#cws-arrow)"/>
+  <path class="cws-arrow" d="M528 176 V216" marker-end="url(#cws-arrow)"/>
+  <path class="cws-arrow cws-dashed" d="M112 280 V328" marker-end="url(#cws-arrow)"/>
+  <path class="cws-arrow cws-dashed" d="M320 280 V328" marker-end="url(#cws-arrow)"/>
+  <path class="cws-arrow cws-dashed" d="M528 280 V328" marker-end="url(#cws-arrow)"/>
+  <path class="cws-arrow" d="M180 384 V432" marker-end="url(#cws-arrow)"/>
+  <path class="cws-arrow" d="M440 384 V432" marker-end="url(#cws-arrow)"/>
+
+  <rect class="cws-mask" x="330" y="296" width="52" height="14" rx="2"/>
+  <text class="cws-label" x="356" y="307" text-anchor="middle">回复摘要</text>
+
+  <!-- 提交 -->
+  <rect class="cws-end" x="24" y="24" width="216" height="56" rx="20"/>
+  <text class="cws-name" x="132" y="47" text-anchor="middle">客户端提交一次改动</text>
+  <text class="cws-mono" x="132" y="65" text-anchor="middle">cibadmin / controld / attrd</text>
+
+  <rect class="cws-step" x="304" y="24" width="312" height="56" rx="6"/>
+  <text class="cws-name" x="460" y="47" text-anchor="middle">节点 A 的 based 不在本地执行</text>
+  <text class="cws-sub" x="460" y="65" text-anchor="middle">把请求原样广播给所有节点，包括自己</text>
+
+  <!-- 全序广播 -->
+  <rect class="cws-focal" x="80" y="120" width="480" height="56" rx="6"/>
+  <text class="cws-name" x="320" y="143" text-anchor="middle">Corosync CPG 按全序投递</text>
+  <text class="cws-sub" x="320" y="161" text-anchor="middle">每个节点收到同样的改动，先后顺序也一样</text>
+
+  <!-- 各自执行 -->
+  <rect class="cws-step" x="24" y="216" width="176" height="64" rx="6"/>
+  <text class="cws-name" x="112" y="243" text-anchor="middle">节点 A 执行改动</text>
+  <text class="cws-sub" x="112" y="261" text-anchor="middle">回复发起的客户端</text>
+
+  <rect class="cws-step" x="232" y="216" width="176" height="64" rx="6"/>
+  <text class="cws-name" x="320" y="243" text-anchor="middle">节点 B 执行改动</text>
+  <text class="cws-sub" x="320" y="261" text-anchor="middle">只改自己的副本</text>
+
+  <rect class="cws-step" x="440" y="216" width="176" height="64" rx="6"/>
+  <text class="cws-name" x="528" y="243" text-anchor="middle">节点 C 执行改动</text>
+  <text class="cws-sub" x="528" y="261" text-anchor="middle">只改自己的副本</text>
+
+  <!-- 事后核对 -->
+  <rect class="cws-step" x="80" y="328" width="480" height="56" rx="6"/>
+  <text class="cws-name" x="320" y="351" text-anchor="middle">DC 上的 based 核对摘要</text>
+  <text class="cws-sub" x="320" y="369" text-anchor="middle">最后一次改动后 5 秒没有新改动，就向所有节点要 CIB 摘要</text>
+
+  <rect class="cws-end" x="80" y="432" width="200" height="48" rx="20"/>
+  <text class="cws-name" x="180" y="453" text-anchor="middle">摘要都一致</text>
+  <text class="cws-sub" x="180" y="469" text-anchor="middle">什么都不做</text>
+
+  <rect class="cws-focal" x="320" y="432" width="240" height="48" rx="20"/>
+  <text class="cws-name" x="440" y="453" text-anchor="middle">某个节点不一致</text>
+  <text class="cws-sub" x="440" y="469" text-anchor="middle">把整份 CIB 发给它，覆盖它的副本</text>
+
+  <!-- 图例 -->
+  <line class="cws-rule" x1="24" y1="512" x2="616" y2="512"/>
+  <rect class="cws-end" x="24" y="528" width="24" height="12" rx="6"/>
+  <text class="cws-label" x="54" y="538">开始 / 结果</text>
+  <line class="cws-arrow cws-dashed" x1="136" y1="534" x2="160" y2="534"/>
+  <text class="cws-label" x="168" y="538">回复</text>
+  <rect class="cws-focal" x="216" y="528" width="24" height="12" rx="2"/>
+  <text class="cws-label" x="246" y="538">一致性靠这两处：全序广播保证同样的改动，摘要核对兜底</text>
+</svg>

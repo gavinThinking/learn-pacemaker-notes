@@ -54,6 +54,7 @@ export const layers: Layer[] = [
         title: "CIB 的结构和同步",
         summary: "configuration 和 status 两段各管什么，改动怎么同步到每个节点。",
         upstream: "daemons/based",
+        note: "03-cib",
       },
       {
         no: "04",

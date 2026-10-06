@@ -1,0 +1,204 @@
+---
+title: 集群的状态记在哪、怎么保持一致：CIB 的两段和同步
+date: 2026-10-06
+summary: CIB 是一份 XML，configuration 段放管理员写的配置，status 段放集群运行时自己记的状态，后者每次启动都扔掉重建。任何节点上的改动都经 Corosync 广播、由每个节点按同样的顺序各自执行，DC 事后再核对摘要兜底。新 DC 上任时挑版本最高的那份 CIB 发给大家；断电节点的资源记录会一直留在 status 段，直到 fencing 成功后被删掉。
+layer: L2
+stage: "03"
+upstream:
+  - label: lib/cib/cib_utils.c：空 CIB 的骨架
+    href: https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/cib/cib_utils.c#L228-L261
+  - label: lib/common/patchset.c：改动后版本号怎么涨
+    href: https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/common/patchset.c#L328-L359
+  - label: daemons/based/based_callbacks.c：改动怎么广播、怎么核对
+    href: https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/daemons/based/based_callbacks.c#L602-L660
+  - label: daemons/based/based_io.c：读盘和写盘
+    href: https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/daemons/based/based_io.c#L186-L302
+  - label: daemons/controld/controld_join_dc.c：新 DC 挑哪份 CIB
+    href: https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/daemons/controld/controld_join_dc.c#L387-L633
+links:
+  - to: "02"
+    why: DC 把 votequorum 的结论写进 CIB 根元素的 have-quorum 属性，调度器从这里读，不直接问 Corosync。
+  - to: "09"
+    why: 先选出 DC，DC 再在 join 时比较各节点 CIB 的版本号，把最高的那份发给所有节点。
+  - to: "04"
+    why: status 段里每个节点的 transient_attributes 由 attrd 写进来，这篇只讲它放在哪、为什么重启就没了。
+  - to: "05"
+    why: 调度器的输入就是一整份 CIB：configuration 段是「要什么」，status 段是「现在是什么」。
+  - to: "12"
+    why: 断电节点的资源记录留在 status 段，调度器因此认为资源可能还在那台上跑、必须先 fencing；fencing 成功后 DC 才删掉这些记录。
+  - to: "08"
+    why: crm_simulate 吃的就是一份保存下来的 CIB，离线重放调度只需要这一个文件。
+---
+
+上一篇讲到，DC 把「有没有 quorum」写进 CIB。CIB（Cluster Information Base，集群信息库）是 Pacemaker 的唯一数据源：资源怎么配、哪个节点在线、每个资源在哪台机器上执行过什么操作、结果如何，都在这一份 XML 里。每个节点都有一份完整副本，由 pacemaker-based 守护进程（下文简称 based）管理。调度器做决定时只读这份 XML，不去问任何守护进程。
+
+所以本篇回答两个问题：这份 XML 里有什么；几个节点上的副本怎么保持一样。
+
+本篇的版本：Pacemaker 2.1.11。源码结论附链接，只依据文档的会单独说明。
+
+## 一句话
+
+CIB 分两段：configuration 是管理员写的配置，status 是集群运行时自己记的状态，后者每次启动都扔掉，再由各节点上报重建。任何节点收到改动请求都不在本地直接改，而是交给 Corosync 广播，每个节点按同一个顺序各自执行，副本因此保持一致；改动停下 5 秒后，DC 再核对一次各节点的摘要，不一致就整份覆盖。根元素上的 `admin_epoch`、`epoch`、`num_updates` 三个数是版本号，新 DC 上任时把版本最高的那份发给所有节点。
+
+## 两段：configuration 和 status
+
+一份新建的空 CIB 长这样（[`createEmptyCib`，`cib_utils.c` 第 228–261 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/cib/cib_utils.c#L228-L261)）。为了看清 status 段，这里补上了一个节点：
+
+```xml
+<cib crm_feature_set="…" validate-with="…" epoch="…" num_updates="…" admin_epoch="0"
+     have-quorum="1" dc-uuid="1">
+  <configuration>
+    <crm_config/>      <!-- 集群选项，例如 no-quorum-policy -->
+    <nodes/>           <!-- 节点列表和永久节点属性 -->
+    <resources/>
+    <constraints/>
+  </configuration>
+  <status>
+    <node_state id="1" uname="node1" in_ccm="…" crmd="…" join="member" expected="member">
+      <transient_attributes/>   <!-- 临时节点属性 -->
+      <lrm/>                    <!-- 这个节点上每个资源最近的操作和结果 -->
+    </node_state>
+  </status>
+</cib>
+```
+
+两段的分工：
+
+<div class="table-scroll">
+
+| 位置 | 内容 | 谁写 |
+| --- | --- | --- |
+| `configuration` 下四个子元素 | 集群选项、节点、资源、约束 | 管理员，通过 pcs、crm_attribute、cibadmin 等工具 |
+| 根元素的 `have-quorum`、`dc-uuid` | 有没有 quorum、谁是 DC | DC 的 controld（[`controld_membership.c` 第 424–436 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/daemons/controld/controld_membership.c#L424-L436)） |
+| `node_state` 的属性 | 这个节点在不在成员名单（`in_ccm`）、controld 在不在线（`crmd`）、加入集群走到哪一步（`join`）、按计划它应不应该在（`expected`） | DC 的 controld（[`create_node_state_update`，`controld_membership.c` 第 123–190 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/daemons/controld/controld_membership.c#L123-L190)） |
+| `transient_attributes` | 临时节点属性 | attrd（[`attrd_cib.c` 第 345–370 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/daemons/attrd/attrd_cib.c#L345-L370)，第 4 讲） |
+| `lrm` | 每个资源在这个节点上最近的操作：start、stop、monitor、promote，以及返回码 | 执行操作的那个节点的 controld（[`controld_update_resource_history`，`controld_cib.c` 第 874–948 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/daemons/controld/controld_cib.c#L874-L948)） |
+
+</div>
+
+可以这样理解：configuration 是「想要什么」，status 是「现在是什么」，调度器比较两者，算出要做哪些操作（第 5 讲）。status 里的东西都能从现实里重新问出来——每个节点加入集群时会把自己正在跑什么上报给 DC（后文「新 DC 上任」一节），所以它不需要可靠地保存在磁盘上。
+
+## 版本号：三个数各管什么
+
+根元素上的三个整数合起来是 CIB 的版本，日志里写成 `admin_epoch.epoch.num_updates`，例如 `0.45.12`。每次改动后 based 自己算新版本（[`xml_create_patchset`，`patchset.c` 第 328–359 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/common/patchset.c#L328-L359)）：
+
+<div class="table-scroll">
+
+| 改动 | `admin_epoch` | `epoch` | `num_updates` |
+| --- | --- | --- | --- |
+| 改了 configuration 段，或删了它下面的东西 | 不变 | +1 | 归零 |
+| 其他改动：status 段、根元素上的 `have-quorum` 等 | 不变 | 不变 | +1 |
+| 有人显式改 `admin_epoch` | 改成给定值 | — | — |
+
+</div>
+
+「改了 configuration 段」的判断在 [`is_config_change`，`patchset.c` 第 148–175 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/common/patchset.c#L148-L175)：configuration 元素被标脏，或者删除的节点路径落在 `/cib/configuration` 下。代码里没有自动增加 `admin_epoch` 的地方，它只随人改。
+
+比较两份 CIB 谁新，先比 `admin_epoch`，相等再比 `epoch`，再相等才比 `num_updates`。这个顺序用在两处：
+
+- **拒绝倒退的改动**：一次改动执行完，如果 `admin_epoch` 变小，或者 `admin_epoch` 相等而 `epoch` 变小，based 拒绝这次改动，返回 `pcmk_err_old_data`，日志 `epoch went backwards`（[`cib_utils.c` 第 477–502 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/cib/cib_utils.c#L477-L502)）。
+- **新 DC 挑哪份 CIB**：见后文。
+
+`admin_epoch` 的用处只依据文档（Pacemaker Explained 的 CIB 属性一节）：管理员要让某份配置无论如何都胜出时——比如恢复一份 `epoch` 比现在小的旧备份——把它的 `admin_epoch` 调大。源码这边能对上的证据是启动时的警告：`cib.xml` 缺 `admin_epoch` 时按 0 处理，并提示「多个节点同时开机时，可能分不清该用哪份配置」（[`based_io.c` 第 272–284 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/daemons/based/based_io.c#L272-L284)）。
+
+## 一次改动怎么到达每个节点
+
+2.1.11 的 based 默认不走旧的「主节点模式」（`legacy_mode` 初值为假，[`based_callbacks.c` 第 48 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/daemons/based/based_callbacks.c#L48)）。一次改动的路径是：
+
+1. 本机客户端（cibadmin、controld、attrd 等）把请求交给本机的 based。凡是会修改 CIB 的请求，或者指名发给别的节点的请求，based 都不在本地执行，标记为「要转发」（[`parse_local_options_v2`，第 602–660 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/daemons/based/based_callbacks.c#L602-L660)）。
+2. 转发时不指定目标节点，请求经 Corosync CPG 广播给所有节点，包括自己（[`forward_request`，第 935–970 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/daemons/based/based_callbacks.c#L935-L970)）。日志：`Forwarding cib_modify operation for section status to all (origin=local/crmd/123)`。
+3. 每个节点的 based 从 CPG 收到这个请求后都执行它，只有当初转发它的那个节点回复发起的客户端（[`parse_peer_options_v2`，第 779–905 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/daemons/based/based_callbacks.c#L779-L905)，`local_notify` 只在 `delegated` 等于本机名时为真）。执行完的日志：`Completed cib_modify operation for section status: OK (rc=0, origin=node1/crmd/123, version=0.45.12)`（[第 1211–1218 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/daemons/based/based_callbacks.c#L1211-L1218)）。
+
+副本为什么能一致：第 1 讲讲过，CPG 保证同一个进程组里每个成员按同一个全序收到消息。每个节点从同一份 CIB 出发、按同样的顺序执行同样的改动、按同样的规则算版本号，结果自然一样。这里没有「主节点批准」这一步：普通写入不经过 DC，也不等多数节点确认，发起节点自己执行完就回复客户端。
+
+<Diagram
+  name="cib-write-sync"
+  caption="一次改动由 CPG 广播、每个节点各自执行；改动停下 5 秒后，DC 再核对摘要兜底。"
+  verified="source"
+  rev="1"
+  gaps={[
+    "没画混合版本集群的旧模式：收到旧版节点的全局更新时，based 切到主节点模式并请求整份同步",
+    "没画节点不在同一个 CPG 分区时的情况：分区期间两边各改各的，靠重新合并后新 DC 的 join 同步收拢",
+  ]}
+/>
+
+混合版本的集群里，如果收到老版本节点发来的旧式全局更新，based 会请求一次整份同步，并切换到旧模式（[第 848–852 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/daemons/based/based_callbacks.c#L848-L852)）。全是 2.1 的集群不会走到这里。
+
+## 5 秒后的摘要核对
+
+全序广播在正常情况下够用，但 based 还留了一道兜底：
+
+- 一个 5 秒的单次定时器（[第 1406–1411 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/daemons/based/based_callbacks.c#L1406-L1411)），每次成功执行一个改动就重新计时（[第 1535–1536 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/daemons/based/based_callbacks.c#L1535-L1536)）。所以它在「最后一次改动之后 5 秒没有新改动」时才触发。
+- 触发后只有主节点（`based_is_primary` 为真）向所有节点广播 ping（[`cib_digester_cb`，第 397–419 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/daemons/based/based_callbacks.c#L397-L419)）。主节点就是 DC 上的 based：controld 当选 DC 时把本机 based 设为主（[`controld_election.c` 第 227 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/daemons/controld/controld_election.c#L227)），落选时设回从（[第 170 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/daemons/controld/controld_election.c#L170)）。
+- 每个节点回复自己 CIB 的摘要。主节点算出自己的摘要逐个比较；ping 发出后 CIB 又被改过，这一轮的回复就作废（[`process_ping_reply`，第 423–505 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/daemons/based/based_callbacks.c#L423-L505)）。
+- 摘要不一致时记 notice 日志 `Local CIB 0.45.12.<摘要> differs from node2: 0.45.11.<摘要>`，然后把自己的整份 CIB 发给那一个节点，覆盖它的副本（[`sync_our_cib`，`based_messages.c` 第 418–465 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/daemons/based/based_messages.c#L418-L465)）。
+
+注意这里不比版本号：只要摘要不同，就以 DC 的那份为准。
+
+## 落盘和启动
+
+- **只有改了 configuration 才写盘**。based 激活新 CIB 时，只在这次改动动了配置时触发写盘（[`based_callbacks.c` 第 1507 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/daemons/based/based_callbacks.c#L1507) 把 `config_changed` 传给 [`activateCibXml`，`based_io.c` 第 352–370 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/daemons/based/based_io.c#L352-L370)）。status 段的改动频繁得多，一个 monitor 结果就是一次，这些都不触发写盘。
+- **写盘写的是整份**。fork 一个子进程，把内存里整份 CIB 写进 `/var/lib/pacemaker/cib/cib.xml`，旁边带一个摘要文件 `cib.xml.sig`（[`write_cib_contents`，`based_io.c` 第 402–451 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/daemons/based/based_io.c#L402-L451)）。所以 `cib.xml` 里也有 status 段，但那只是上一次改配置时的快照。
+- **启动时扔掉 status**。based 读 `cib.xml` 时删掉整个 status 段，换成空的；只有单机模式（`-s`）保留（[`based_io.c` 第 259–268 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/daemons/based/based_io.c#L259-L268)，调用处 [`pacemaker-based.c` 第 429 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/daemons/based/pacemaker-based.c#L429)）。根元素上的 `dc-uuid` 也删掉，等 DC 重新写（[`based_io.c` 第 296–297 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/daemons/based/based_io.c#L296-L297)）。
+
+一个节点重启后，手里只有磁盘上的配置和空的 status；它加入集群时，会从 DC 那边拿到整份 CIB。
+
+## 新 DC 上任：挑版本最高的那份
+
+DC 选出来以后（第 9 讲），要让所有节点 join（加入）。每个节点在 join 请求里带上自己 CIB 的版本三元组，DC 逐个比较（[`do_dc_join_filter_offer`，`controld_join_dc.c` 第 387–560 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/daemons/controld/controld_join_dc.c#L387-L560)）：
+
+- 按 `admin_epoch`、`epoch`、`num_updates` 的顺序比，记住目前最高的那份和它来自哪个节点（[第 423–443 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/daemons/controld/controld_join_dc.c#L423-L443)）。版本相同时 DC 自己优先（[第 505–508 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/daemons/controld/controld_join_dc.c#L505-L508)）。
+- 拒绝这几种节点：CIB 用的 schema 本机不认识、feature set 不兼容、上一轮 join 同步它的 CIB 失败过。
+
+收齐以后 DC 做 finalize（[`do_dc_join_finalize`，第 567–633 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/daemons/controld/controld_join_dc.c#L567-L633)）：如果还有正在执行的 transition（一批调度出来的操作），先等它结束；然后让版本最高的节点把整份 CIB 发给所有节点。最高的是 DC 自己就直接发；是别的节点就记 notice 日志 `Finalizing join-3 for 2 nodes (sync'ing CIB from node2)`，请那个节点发。
+
+最后每个节点确认 join 时，DC 在一个事务里做两件事（[`do_dc_join_ack`，第 716–830 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/daemons/controld/controld_join_dc.c#L716-L830)）：删掉这个节点在 status 里的 `lrm` 记录，再写回它这次上报的、本机执行器里的真实状态。DC 自己的那份不用上报内容，而是当场再问一次本机执行器。
+
+于是 join 完成后，每个**活着的**节点在 status 段里的资源记录，都是它此刻真实在跑的东西。没有来 join 的节点——比如刚断电的那台——它的旧记录没有被任何人改动，原样留着。
+
+举个例子说明「挑最高」的代价：node3 离线一周，期间集群改了 5 次配置，`epoch` 从 40 涨到 45。node3 回来时手里是 40，比不过，它的副本被覆盖，这是想要的结果。反过来，如果有人在一台离线节点上用 cibadmin 改了很多次文件，让它的 `epoch` 超过了集群，那它重新加入、而且恰好赶上新 DC 选举时，这份配置就会赢过集群里正在用的那份。这一段是按上面的比较规则推出来的，没有在集群上复现。
+
+## 回到主线：主库所在节点断电
+
+接第 1、2 讲：Corosync 交出少了 node1 的新名单，剩下的节点仍有 quorum。CIB 这一层发生的事：
+
+1. DC 的 controld 收到成员变化，为 node1 写一条 `node_state`：`in_ccm="0"`（不在成员名单里；集群的 feature set 不低于 3.18.0 时，在名单里写的是加入时间，不在写 0），经广播写进每个节点的副本（每次成员变化后由 [`post_cache_update`，`controld_membership.c` 第 60–73 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/daemons/controld/controld_membership.c#L60-L73) 调 `populate_cib_nodes`，给缓存里的每个节点各写一条）。这是 status 改动，版本号的 `num_updates` 加 1。
+2. 断电的如果正好是 DC，剩下的节点先选出新 DC，再做 join。node1 不来 join，所以它的 `lrm` 记录——「PostgreSQL 在这台上 promote 成功、是主库」——原样留在每份副本里。
+3. 调度器读到 node1 的 `expected="member"`、`in_ccm="0"`：按计划它应该在，实际不在名单里，判定为 unclean（状态不明），理由是 `peer is no longer part of the cluster`，要先 fencing（[`unpack.c` 第 1779–1782 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pengine/unpack.c#L1779-L1782)）。它的 `lrm` 记录还说主库在那台上，调度器不能假定主库已经停了。
+4. fencing 成功后，DC 更新 node1 的 `node_state`，接着删掉它的整个 `lrm` 记录和临时属性（[`update_node_state_after_fencing`，`controld_fencing.c` 第 218–272 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/daemons/controld/controld_fencing.c#L218-L272)）。调度器再算时，node1 上已经没有任何资源，备库才能被提升（第 12、14 讲）。
+
+所以「断电节点上原来跑着什么」这件事，靠的不是谁记得，而是那段没人删的 `lrm` 记录。
+
+## 读状态时看哪里
+
+<div class="table-scroll">
+
+| 命令 | 看什么 |
+| --- | --- |
+| `cibadmin -Q` | 整份 CIB；第一行根元素上就是三段版本号和 `have-quorum`、`dc-uuid` |
+| `cibadmin -Q --scope configuration` | 只看配置段 |
+| `cibadmin -Q --scope status` | 只看状态段：每个节点的 `node_state`、临时属性、资源操作记录 |
+
+</div>
+
+日志里对应本篇几个环节的行：
+
+<div class="table-scroll">
+
+| 日志 | 级别 | 说明 |
+| --- | --- | --- |
+| `Forwarding cib_modify operation for section status to all (origin=…)` | info | 本机收到改动请求，转给所有节点 |
+| `Completed cib_modify operation for section status: OK (rc=0, origin=…, version=0.45.12)` | info | 本机执行完一次改动，`version` 是执行后的版本号 |
+| `Local CIB 0.45.12.<摘要> differs from node2: …` | notice | 摘要核对发现不一致，DC 接着把整份 CIB 发给 node2 |
+| `Finalizing join-3 for 2 nodes (sync'ing CIB from node2)` | notice | 新 DC 发现 node2 的 CIB 版本最高，以它为准 |
+| `epoch went backwards: 45 -> 44` | err | 一次改动会让版本倒退，被拒绝 |
+| `No value for admin_epoch was specified in the configuration.` | warning | 磁盘上的 `cib.xml` 缺 `admin_epoch`，按 0 处理 |
+
+</div>
+
+## 还没核对的
+
+- `cibadmin --replace` 整份替换、`cib_process_replace` 怎么处理版本号比自己低的副本，没有读。
+- 事务（`init_transaction`，join 时用到）在 based 里怎么保证几步改动一起生效或一起不生效，只看了调用处。
+- 多个节点同时开机、各自磁盘上的配置不同时，最终用哪份，只按比较规则推理，没有实测。
+- based 和客户端之间的权限控制（ACL）没有涉及。

@@ -28,7 +28,7 @@ export const storyline: Step[] = [
   },
   {
     stages: ["03"],
-    what: "新 DC 以 CIB 为准：断电节点上原来跑着哪些资源、各是什么角色，都记在 CIB 的 status 段。",
+    what: "DC 在 CIB 的 status 段把断电节点记为不在成员名单里。它上面原来跑着哪些资源、各是什么角色，记录留在 status 段没人删——新 DC 做 join 时只重写来加入的节点——调度器据此判定它状态不明，必须先 fencing。",
   },
   {
     stages: ["12"],
