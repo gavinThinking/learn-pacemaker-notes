@@ -115,6 +115,7 @@ export const layers: Layer[] = [
         title: "OCF 资源代理协议",
         summary: "start / stop / monitor / promote 的返回码约定，代理写错了集群会怎样。",
         upstream: "daemons/execd",
+        note: "10-ocf-agents",
       },
       {
         no: "11",

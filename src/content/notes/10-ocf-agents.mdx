@@ -1,0 +1,187 @@
+---
+title: OCF 资源代理协议：Pacemaker 只看退出码，再拿它和期望值比
+date: 2026-10-06
+summary: 资源代理是一个可执行文件，第一个参数是动作名（start、stop、monitor、promote……），参数从 OCF_RESKEY_ 开头的环境变量读，用退出码报结果。execd 每个资源一次只跑一个动作，超时（默认 20 秒）直接对整个进程组发 SIGKILL。调度器把退出码和这次动作的期望值比较：probe 期望 7（没在跑），主角色的 monitor 期望 8，大多数动作期望 0，一致就是成功。不一致时按退出码分档：一般的交给 on-fail；2、4、5 和不该出现的 3 让资源不再在这个节点启动；6 让它在所有节点都不启动。stop 返回 7 也算失败，默认处理是 fencing。
+layer: L4
+stage: "10"
+upstream:
+  - label: include/crm/common/results.h：OCF 退出码的完整列表
+    href: https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/include/crm/common/results.h#L165-L218
+  - label: lib/services/services_linux.c：给代理准备环境变量、读退出原因、处理超时
+    href: https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/services/services_linux.c#L419-L745
+  - label: lib/pengine/unpack.c：调度器把退出码和期望值对照，决定算不算失败、失败有多重
+    href: https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pengine/unpack.c#L3975-L4160
+  - label: agents/ocf/Stateful.in：上游自带的 promotable 示例代理
+    href: https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/agents/ocf/Stateful.in#L144-L265
+links:
+  - to: "03"
+    why: 每次动作的结果由 controld 写进 status 段的 lrm_rsc_op：退出码、期望值、退出原因都在这条记录里，调度器下次计算只读它，不会回头去问代理。
+  - to: "04"
+    why: 资源代理在 start、promote、monitor 里调用 crm_attribute --promotion 写自己的 promotion score，这是代理影响「谁当主」的唯一入口。
+  - to: "07"
+    why: promote、demote 是代理里的两个动作；主角色的 monitor 期望返回 8，调度器也靠 probe 返回的 8 发现哪个实例本来就是主。
+  - to: "08"
+    why: 每个动作的期望返回码写在 transition key 里随图下发，结果写回 CIB 时一起存下，调度器拿它判断这次是成功还是失败。
+  - to: "09"
+    why: join 时每个节点用 execd 的记录覆盖 status 段里自己那一份——那份记录就是本篇说的一条条代理调用结果。
+  - to: "11"
+    why: 本篇只决定「这次算不算失败、失败有多重」；普通失败之后原地重启、换节点还是停掉，由 on-fail 和 migration-threshold 决定。
+  - to: "12"
+    why: stop 失败（返回非 0 或超时）时 on-fail 的默认值是 fencing：停不干净的资源，只能连节点一起关掉才能在别处启动。
+  - to: "14"
+    why: PAF 本身就是一个 OCF 资源代理，本篇的约定它全要遵守：monitor 对主库返回 8、对备库返回 0、停着返回 7。
+---
+
+第 8 讲的 transition graph 里，每个资源动作最后都落到一个脚本上：资源代理（resource agent）。PostgreSQL、虚拟 IP、文件系统，Pacemaker 本身都不懂，它只会按一套约定调用对应的代理，再读代理的退出码。这套约定叫 OCF（Open Cluster Framework）资源代理协议。本篇看 Pacemaker 怎么调用代理、怎么理解退出码，以及同一个退出码为什么有时算成功、有时算失败。
+
+本篇的版本：Pacemaker 2.1.11。源码结论附链接，只依据文档的会单独说明。
+
+## 一句话
+
+资源代理是一个可执行文件。Pacemaker 用动作名作第一个参数运行它，把资源参数放进环境变量，只看它的退出码，不关心它做了什么。退出码要和**这次动作的期望值**比较才有意义：probe 期望 7，表示「没在跑」，返回 0 不算失败，只说明资源原来就在那里跑着；stop 期望 0，返回 7 就是失败，默认会触发 fencing。写代理时最容易出事的就是这几处：stop 不幂等、monitor 分不清「停着」和「坏了」、动作耗时超过超时值。
+
+## execd 怎么运行一个代理
+
+资源的 class 写成 `ocf:<provider>:<type>`，例如 `ocf:pacemaker:Stateful`。DC 把动作发给资源所在节点的 controld，controld 交给本机的 execd，execd 这样运行代理：
+
+1. **找文件**：在 `OCF_RA_PATH`（默认 `/usr/lib/ocf/resource.d`）下找 `<provider>/<type>`，找不到就报「没装」（[services_ocf.c L123-155](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/services/services_ocf.c#L123-L155)，默认路径见 [configure.ac L481-494](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/configure.ac#L481-L494)）。
+2. **传动作**：动作名是唯一的命令行参数，例如 `Stateful promote`（同一段代码 L148-149）。
+3. **传参数**：全部走环境变量，见下表（[services_linux.c L419-490](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/services/services_linux.c#L419-L490)）。
+4. **排队**：同一个资源同一时刻只跑一个动作，后来的排队等（[execd_commands.c L1413](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/daemons/execd/execd_commands.c#L1413)）。收到 stop 时，先取消这个资源所有的周期 monitor（[L520-526](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/daemons/execd/execd_commands.c#L520-L526)），所以代理不用担心 stop 跑到一半时 monitor 插进来。
+
+<div class="table-scroll">
+
+| 环境变量 | 内容 |
+| --- | --- |
+| `OCF_RESKEY_<参数名>` | 资源配置里的每个参数，例如 `OCF_RESKEY_pgdata` |
+| `OCF_RESKEY_CRM_meta_<名字>` | 这次动作的元信息。最常用的是 `OCF_RESKEY_CRM_meta_interval`：0 表示一次性动作（包括 probe），非 0 是周期 monitor 的间隔毫秒数 |
+| `OCF_RESOURCE_INSTANCE` | 资源 ID；clone 的实例会带 `:0`、`:1` 后缀 |
+| `OCF_RESOURCE_TYPE` / `OCF_RESOURCE_PROVIDER` | class 里的 type 和 provider |
+| `OCF_RA_VERSION_MAJOR` / `_MINOR` | 1 和 1，即 OCF 1.1 |
+| `OCF_ROOT` | OCF 根目录，代理用它找公共 shell 函数库 |
+| `OCF_EXIT_REASON_PREFIX` | `ocf-exit-reason:`，下文「退出原因」一节用 |
+
+</div>
+
+上游自带的 `Stateful` 代理就用 `OCF_RESKEY_CRM_meta_interval` 区分 probe 和周期 monitor：只在 probe 时重新写一遍 promotion score（[Stateful.in L196-210](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/agents/ocf/Stateful.in#L196-L210)）。
+
+## 退出码
+
+完整列表在 [results.h L165-218](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/include/crm/common/results.h#L165-L218)。右列是这个码**和期望值不一致时**调度器怎么处理，代码在 [unpack.c L3975-4160](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pengine/unpack.c#L3975-L4160)。
+
+<div class="table-scroll">
+
+| 码 | 源码里的名字 | 意思 | 不符合期望时 |
+| --- | --- | --- | --- |
+| 0 | `PCMK_OCF_OK` | 成功；monitor 里表示「在跑，非主角色」 | 普通失败 |
+| 1 | `PCMK_OCF_UNKNOWN_ERROR` | 说不清的错误 | 普通失败 |
+| 2 | `PCMK_OCF_INVALID_PARAM` | 参数在**本节点**上不对 | 硬失败：不再在本节点启动 |
+| 3 | `PCMK_OCF_UNIMPLEMENT_FEATURE` | 不支持这个动作 | 一次性动作是硬失败；周期 monitor 记为「不支持」 |
+| 4 | `PCMK_OCF_INSUFFICIENT_PRIV` | 权限不够 | 硬失败 |
+| 5 | `PCMK_OCF_NOT_INSTALLED` | 本节点缺软件或文件 | 硬失败 |
+| 6 | `PCMK_OCF_NOT_CONFIGURED` | 配置本身就错，换哪个节点都一样 | 致命失败：所有节点都不再启动 |
+| 7 | `PCMK_OCF_NOT_RUNNING` | 干净地停着 | 普通失败（probe 和非托管资源除外，见下节） |
+| 8 | `PCMK_OCF_RUNNING_PROMOTED` | 以主角色运行 | 普通失败；probe 返回它则只说明「原来就是主」 |
+| 9 | `PCMK_OCF_FAILED_PROMOTED` | 出错了，而且可能还是主 | 普通失败，并认定它当时仍是主 |
+| 190 | `PCMK_OCF_DEGRADED` | 在跑，但状态变差 | 先当成 0 再比较 |
+| 191 | `PCMK_OCF_DEGRADED_PROMOTED` | 主角色在跑，但状态变差 | 先当成 8 再比较 |
+
+</div>
+
+几处细节：
+
+- **超出范围的码一律当 1。** 代理返回 0–9、190、191 以外的值，execd 直接改成 1（[services_ocf.c L166-180](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/services/services_ocf.c#L166-L180)）。脚本里 `exit 255` 或者被 `set -e` 带出来的奇怪退出码，集群看到的都是 1。
+- **190、191 是「成功但要提醒」。** 调度器先把它们当成 0、8（[agents.c L71-89](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/common/agents.c#L71-L89)），资源照常算在跑；同时把这条记录放进失败动作列表，`crm_mon` 的 Failed Resource Actions 里会看到它（[unpack.c L3984-3991](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pengine/unpack.c#L3984-L3991)）。
+- **硬失败和致命失败的区别是范围。** 硬失败给资源加一条本节点 `-INFINITY` 的 location，ID 是 `hard-error`；致命失败加的是所有节点的 `-INFINITY`，ID 是 `fatal-error`（[unpack.c L5015-5040](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pengine/unpack.c#L5015-L5040)）。这两条约束不写进配置段，是调度器每次计算时从那条失败记录推出来的：用 `crm_resource --cleanup` 清掉记录，或者一次性动作的失败记录按 failure-timeout 过期（[unpack.c L4643-4672](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pengine/unpack.c#L4643-L4672)，第 11 讲），约束才消失。所以 2 和 6 不能乱用：源码注释里 2 是「在本节点的环境下不成立」，6 是「本身就不成立」——参数漏填或写错用 6，参数指向的东西只在这台机器上不存在用 2。
+- **9 和 1 的区别在角色。** 返回 9 时调度器认定这个实例当时仍是主（[unpack.c L4108-4113](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pengine/unpack.c#L4108-L4113)），恢复时按主角色的实例处理。
+
+## 期望值：同一个码，可能成功也可能失败
+
+调度器排每个动作时就定好了期望的退出码，写进 transition key 随图下发（第 8 讲）。结果回来后，退出码等于期望值就记为成功，不等就记为失败，再按上一节的表分档（[unpack.c L4040-4058](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pengine/unpack.c#L4040-L4058)）。
+
+<div class="table-scroll">
+
+| 动作 | 期望值 | 出处 |
+| --- | --- | --- |
+| probe，调度器认为资源没在这个节点上 | 7 | [pcmk_sched_probes.c L28-41](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pacemaker/pcmk_sched_probes.c#L28-L41) |
+| probe，认为它在这里且是主 | 8 | 同上 |
+| probe，认为它在这里，不是主 | 0 | 同上（不设就是 0） |
+| start、stop、promote、demote、notify | 0 | — |
+| 非主角色的周期 monitor | 0 | — |
+| 主角色的周期 monitor | 8 | [pcmk_sched_recurring.c L343-346](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pacemaker/pcmk_sched_recurring.c#L343-L346) |
+| Stopped 角色的周期 monitor（在不该运行的节点上定期确认它没跑） | 7 | [pcmk_sched_recurring.c L545](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pacemaker/pcmk_sched_recurring.c#L545) |
+
+</div>
+
+probe 是例外：它的任务是发现现状，所以返回 0 或 8 而期望是 7 时，调度器不算失败，只记一条 `Probe found ... active on ...`，此后把资源当成在这个节点上跑着（[unpack.c L4061-4105](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pengine/unpack.c#L4061-L4105)）。如果资源只该跑一份，调度器下一张图就会安排把多出来的那份停掉。
+
+7 只在三种情况下不算失败：probe、期望值本来就是 7、资源处于非托管状态（[unpack.c L4074-4089](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pengine/unpack.c#L4074-L4089)）。其余时候返回 7 都是失败，包括 stop。
+
+execd 一侧对 OCF 代理的退出码不做改写；controld 收到 7、8、190、191 时也不下结论，注释原文是「Leave it to the TE/scheduler to decide」（[controld_execd.c L2297-2310](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/daemons/controld/controld_execd.c#L2297-L2310)）。成败只在调度器里判定一次。
+
+## 代理最容易写错的三处
+
+**stop 必须幂等。** 资源已经停了，再调 stop 也要返回 0，不能返回 7。stop 的期望值是 0，返回 7 就是失败；stop 失败时 on-fail 的默认值是 fencing（集群启用了 fencing 时），没启用 fencing 就是 block，资源停在原地不再管理（[pe_actions.c L999-1006](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pengine/pe_actions.c#L999-L1006)）。如果 stop 返回 2、3、4、5 而这个节点又不能被 fencing，调度器记 `No further recovery can be attempted`，把资源设成非托管并阻塞，只能人工处理（[unpack.c L3905-3931](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pengine/unpack.c#L3905-L3931)）。start 也一样：已经在跑就返回 0。
+
+**monitor 要分清「停着」和「坏了」。** 资源干净地停着返回 7，出了问题才返回 1。集群启动或节点加入时，调度器会在每个节点上 probe 每个资源，期望 7。一台从没装过这个服务的节点如果返回 1，调度器就认为资源在这里处于失败状态（[unpack.c L3868-3875](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pengine/unpack.c#L3868-L3875)），要去这里执行 stop——一个本来就不存在的资源，被安排了一次恢复。
+
+**动作要在超时内结束。** 每个动作的超时默认 20 秒（[actions.h L37-38](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/include/crm/common/actions.h#L37-L38)），在资源的 op 定义里用 `timeout` 改。代理进程启动时自成一个进程组（[services_linux.c L1000](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/services/services_linux.c#L1000)），超时后 execd 对**整个进程组**发 SIGKILL，不先发 SIGTERM（[mainloop.c L1064-1080](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/common/mainloop.c#L1064-L1080)）。脚本里的清理代码、trap 都来不及跑，它启动的子进程也一起被杀。这次动作记为超时，日志写 `timed out after`（[services_linux.c L727-735](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/services/services_linux.c#L727-L735)），调度器按失败处理。stop 超时同样默认 fencing。所以代理内部的等待要比 `timeout` 短，PostgreSQL 这种停库可能要几十秒的服务，stop 的 `timeout` 要按最坏情况配。
+
+## 退出原因
+
+退出码只有一个数字。代理想说清楚为什么失败，就往 stderr 打一行 `ocf-exit-reason:<原因>`，公共函数库里的 `ocf_exit_reason` 做的就是这件事。execd 取 stderr 里**最后一次**出现的这个前缀，读到行尾，最多 128 个字符（[services_linux.c L646-690](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/services/services_linux.c#L646-L690)）。这段文字存进 lrm_rsc_op 的 `exit-reason`，出现在 `crm_mon` 的失败动作和调度器日志里。`Stateful` 的 monitor 里有个测试用的写法（[Stateful.in L190-194](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/agents/ocf/Stateful.in#L190-L194)）：状态目录下有 `.rc` 文件时，直接用文件里的数字作退出码，并附一条退出原因。
+
+## 其他几个动作
+
+<div class="table-scroll">
+
+| 动作 | 用途 |
+| --- | --- |
+| `meta-data` | 打印 XML，描述代理支持哪些参数和动作。controld 读它来知道哪些参数改了只需 reload、哪些参数是 private（密码这类敏感参数）（[controld_metadata.c L70-90](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/daemons/controld/controld_metadata.c#L70-L90)） |
+| `validate-all` | 只检查配置，不碰资源 |
+| `notify` | clone 的实例在别的实例 start、stop、promote、demote 前后收到通知，需要在资源的 meta 里开 `notify=true`（第 7 讲、第 14 讲） |
+| `reload-agent` | OCF 1.1 的动作：只改了标成可 reload 的参数时，用它代替重启（[controld_metadata.c L160-180](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/daemons/controld/controld_metadata.c#L160-L180) 处理它和旧版 `reload` 的区别） |
+
+</div>
+
+<Diagram
+  name="ocf-result-path"
+  caption="一个退出码从代理脚本到调度器判定的路径。判定只在调度器里做一次，依据是这次动作的期望值。"
+  verified="source"
+  rev="1"
+  gaps={["没有在真实集群里逐个退出码验证调度结果，判定规则全部来自读 unpack.c"]}
+/>
+
+## 回到主线
+
+两节点集群，node1 断电，node2 已经当选 DC，fencing 了 node1，调度器算出的图里要在 node2 上 promote PostgreSQL（第 8、9、12 讲）：
+
+1. node2 的 controld 把 promote 交给本机 execd。execd 设好 `OCF_RESKEY_*`，运行 `<代理> promote`，开始计时；
+2. 代理在超时内把备库提升为主库，返回 0。期望值是 0，成功；图里排在它后面的动作，比如 VIP 启动，才被放行；
+3. 调度器给新主库排一个主角色的周期 monitor，期望 8。代理此后每次 monitor 都要返回 8；返回 0 说明它其实没当上主，返回 7 说明进程没了，两者都是失败，交给第 11 讲的 on-fail；
+4. promote 如果超过超时值，进程组被 SIGKILL，这次 promote 记为失败，同样进入第 11 讲的处理。
+
+## 读日志时看哪里
+
+<div class="table-scroll">
+
+| 想知道 | 日志里找 |
+| --- | --- |
+| 某次动作的退出码和期望值 | `crm_mon` 的 Failed Resource Actions；CIB 里 lrm_rsc_op 的 `rc-code` 和 `transition-key`；调度器 debug 日志 `expected N (...), got M (...)` |
+| 动作超时 | execd：`... timed out after ...` |
+| probe 发现资源本来就在跑 | `Probe found ... active on ...`、`Probe found ... active and promoted on ...` |
+| 硬失败，资源被禁止在某节点运行 | `Preventing ... from restarting on ... because of hard failure` |
+| 致命失败，资源被禁止在所有节点运行 | `Preventing ... from restarting anywhere because of fatal failure` |
+| stop 失败又不能 fencing | `No further recovery can be attempted for ...` |
+| 配了 `on-fail=ignore` 的失败 | `Pretending failed ... succeeded` |
+| 代理返回了列表外的码 | `Treating unknown exit status ... as failure` |
+
+</div>
+
+## 还没核对的
+
+- 本篇没有在真实集群里逐个退出码跑一遍，各码的处理结论全部来自读调度器代码。
+- 脚本里常用的常量名（`OCF_SUCCESS`、`OCF_NOT_RUNNING` 等）定义在 resource-agents 包的公共函数库里，本篇没有对照那个仓库。
+- 调度器什么情况下选择 `reload-agent` 而不是重启，只看了 controld 解析 meta-data 的一侧，调度器那一侧没有追。
+- systemd、LSB 类资源的退出码怎样折算成 OCF 码，只看到 execd 对 systemd 的 start、stop 有一处调整，没有展开。
+- Pacemaker Remote 节点上代理由 pacemaker-remoted 运行，本篇没有核对两者的差异。

@@ -1,0 +1,110 @@
+<svg data-lpn-source-sha="09383a3bef75c07c" width="100%" id="ocfr" viewBox="0 0 640 472" style="min-width: 560px" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="ocfr-title ocfr-desc">
+  <title id="ocfr-title">一次资源动作的返回码，从代理脚本走到调度器的判定</title>
+  <desc id="ocfr-desc">DC 指派动作后，执行节点上的 controld 把它交给 execd。execd 每个资源一次只跑一个动作，把参数写成 OCF_RESKEY_ 开头的环境变量，以动作名为第一个参数运行资源代理脚本，并开始计时。脚本退出后 execd 拿到返回码和 ocf-exit-reason；超时则对整个进程组发 SIGKILL，记为超时。controld 把结果写进 CIB status 段的 lrm_rsc_op。调度器下一次计算时把实际返回码和这次动作的期望值比较：一致就是成功（190、191 先当成 0、8）；不一致是普通失败，交给 on-fail；返回 2、4、5 或不该出现的 3 是硬失败，禁止资源再在这个节点上运行；返回 6 是致命失败，禁止资源在所有节点上运行。</desc>
+  <defs>
+    <style>
+      #ocfr {
+        --ocfr-paper: var(--paper-raised, #ffffff);
+        --ocfr-node: var(--paper, #fdfcf9);
+        --ocfr-paper-2: var(--paper-muted, #f6f3ec);
+        --ocfr-ink: var(--ink, #22201b);
+        --ocfr-muted: var(--ink-muted, #6a6459);
+        --ocfr-soft: var(--ink-subtle, #7a7365);
+        --ocfr-rule: var(--line, #e7e1d5);
+        --ocfr-accent: var(--brand, #2f5fd0);
+        --ocfr-tint: var(--brand-light, #eef2fb);
+        --ocfr-sans: var(--font-body, "Inter Variable", Inter, -apple-system, "PingFang SC", "Noto Sans SC", sans-serif);
+        --ocfr-mono: var(--font-mono, ui-monospace, SFMono-Regular, Consolas, monospace);
+      }
+      #ocfr .ocfr-bg { fill: var(--ocfr-paper); }
+      #ocfr .ocfr-band { fill: var(--ocfr-paper-2); }
+      #ocfr .ocfr-step { fill: var(--ocfr-node); stroke: var(--ocfr-ink); stroke-width: 1; }
+      #ocfr .ocfr-end { fill: color-mix(in srgb, var(--ocfr-ink) 3%, var(--ocfr-node)); stroke: color-mix(in srgb, var(--ocfr-ink) 30%, transparent); stroke-width: 1; }
+      #ocfr .ocfr-focal { fill: var(--ocfr-tint); stroke: var(--ocfr-accent); stroke-width: 1.2; }
+      #ocfr .ocfr-arrow { fill: none; stroke: var(--ocfr-muted); stroke-width: 1.2; }
+      #ocfr .ocfr-dashed { stroke-dasharray: 5 4; }
+      #ocfr .ocfr-head { fill: var(--ocfr-muted); }
+      #ocfr .ocfr-mask { fill: var(--ocfr-paper); }
+      #ocfr .ocfr-name { font: 600 12px var(--ocfr-sans); fill: var(--ocfr-ink); }
+      #ocfr .ocfr-sub { font: 400 10px var(--ocfr-sans); fill: var(--ocfr-muted); }
+      #ocfr .ocfr-mono { font: 400 9px var(--ocfr-mono); fill: var(--ocfr-muted); }
+      #ocfr .ocfr-tag { font: 600 9px var(--ocfr-mono); fill: var(--ocfr-soft); letter-spacing: 0.08em; }
+      #ocfr .ocfr-label { font: 400 10px var(--ocfr-sans); fill: var(--ocfr-muted); }
+      #ocfr .ocfr-rule { stroke: var(--ocfr-rule); stroke-width: 0.8; }
+    </style>
+    <marker id="ocfr-arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+      <polygon class="ocfr-head" points="0 0, 8 3, 0 6"/>
+    </marker>
+  </defs>
+
+  <rect class="ocfr-bg" width="640" height="472"/>
+
+  <!-- 连线 -->
+  <path class="ocfr-arrow" d="M184 72 H240" marker-end="url(#ocfr-arrow)"/>
+  <path class="ocfr-arrow" d="M400 72 H456" marker-end="url(#ocfr-arrow)"/>
+  <path class="ocfr-arrow" d="M536 104 V176" marker-end="url(#ocfr-arrow)"/>
+  <path class="ocfr-arrow" d="M456 208 H400" marker-end="url(#ocfr-arrow)"/>
+  <path class="ocfr-arrow" d="M240 208 H184" marker-end="url(#ocfr-arrow)"/>
+  <path class="ocfr-arrow" d="M104 240 V336" marker-end="url(#ocfr-arrow)"/>
+  <path class="ocfr-arrow" d="M136 240 V292 Q136 300 144 300 H312 Q320 300 320 308 V336" marker-end="url(#ocfr-arrow)"/>
+  <path class="ocfr-arrow" d="M168 240 V264 Q168 272 176 272 H528 Q536 272 536 280 V336" marker-end="url(#ocfr-arrow)"/>
+
+  <rect class="ocfr-mask" x="542" y="134" width="74" height="12" rx="2"/>
+  <text class="ocfr-label" x="544" y="144">进程退出或超时</text>
+  <rect class="ocfr-mask" x="38" y="300" width="60" height="12" rx="2"/>
+  <text class="ocfr-label" x="96" y="310" text-anchor="end">和期望一致</text>
+  <rect class="ocfr-mask" x="198" y="282" width="68" height="12" rx="2"/>
+  <text class="ocfr-label" x="232" y="292" text-anchor="middle">不一致，其他值</text>
+  <rect class="ocfr-mask" x="380" y="254" width="120" height="12" rx="2"/>
+  <text class="ocfr-label" x="440" y="264" text-anchor="middle">返回 2、3、4、5 或 6</text>
+
+  <!-- 第一行：发出动作 -->
+  <rect class="ocfr-step" x="24" y="40" width="160" height="64" rx="6"/>
+  <text class="ocfr-name" x="104" y="62" text-anchor="middle">controld</text>
+  <text class="ocfr-mono" x="104" y="78" text-anchor="middle">rsc_op</text>
+  <text class="ocfr-sub" x="104" y="94" text-anchor="middle">DC 指派到这个节点的动作</text>
+
+  <rect class="ocfr-step" x="240" y="40" width="160" height="64" rx="6"/>
+  <text class="ocfr-name" x="320" y="62" text-anchor="middle">execd</text>
+  <text class="ocfr-mono" x="320" y="78" text-anchor="middle">OCF_RESKEY_*</text>
+  <text class="ocfr-sub" x="320" y="94" text-anchor="middle">每个资源一次只跑一个动作</text>
+
+  <rect class="ocfr-step" x="456" y="40" width="160" height="64" rx="6"/>
+  <text class="ocfr-name" x="536" y="62" text-anchor="middle">资源代理脚本</text>
+  <text class="ocfr-mono" x="536" y="78" text-anchor="middle">Stateful promote</text>
+  <text class="ocfr-sub" x="536" y="94" text-anchor="middle">返回码 + ocf-exit-reason</text>
+
+  <!-- 第二行：结果回流 -->
+  <rect class="ocfr-step" x="456" y="176" width="160" height="64" rx="6"/>
+  <text class="ocfr-name" x="536" y="198" text-anchor="middle">execd 收结果</text>
+  <text class="ocfr-mono" x="536" y="214" text-anchor="middle">rc + 执行状态</text>
+  <text class="ocfr-sub" x="536" y="230" text-anchor="middle">超时：SIGKILL 整个进程组</text>
+
+  <rect class="ocfr-step" x="240" y="176" width="160" height="64" rx="6"/>
+  <text class="ocfr-name" x="320" y="198" text-anchor="middle">CIB status 段</text>
+  <text class="ocfr-mono" x="320" y="214" text-anchor="middle">lrm_rsc_op</text>
+  <text class="ocfr-sub" x="320" y="230" text-anchor="middle">返回码、期望值、原因</text>
+
+  <rect class="ocfr-focal" x="24" y="176" width="160" height="64" rx="6"/>
+  <text class="ocfr-name" x="104" y="198" text-anchor="middle">调度器比对</text>
+  <text class="ocfr-mono" x="104" y="214" text-anchor="middle">remap_operation</text>
+  <text class="ocfr-sub" x="104" y="230" text-anchor="middle">实际返回码 vs 期望值</text>
+
+  <!-- 第三行：判定 -->
+  <rect class="ocfr-end" x="24" y="336" width="160" height="56" rx="6"/>
+  <text class="ocfr-name" x="104" y="359" text-anchor="middle">成功</text>
+  <text class="ocfr-sub" x="104" y="377" text-anchor="middle">190、191 先当成 0、8</text>
+
+  <rect class="ocfr-step" x="240" y="336" width="160" height="56" rx="6"/>
+  <text class="ocfr-name" x="320" y="359" text-anchor="middle">普通失败</text>
+  <text class="ocfr-sub" x="320" y="377" text-anchor="middle">按 on-fail 处理（第 11 讲）</text>
+
+  <rect class="ocfr-focal" x="456" y="336" width="160" height="56" rx="6"/>
+  <text class="ocfr-name" x="536" y="359" text-anchor="middle">硬失败 / 致命失败</text>
+  <text class="ocfr-sub" x="536" y="377" text-anchor="middle">禁本节点 / 禁所有节点</text>
+
+  <!-- 图例 -->
+  <line class="ocfr-rule" x1="24" y1="424" x2="616" y2="424"/>
+  <rect class="ocfr-focal" x="24" y="440" width="24" height="12" rx="2"/>
+  <text class="ocfr-label" x="54" y="450">重点：同一个返回码算不算失败，看这次动作的期望值</text>
+</svg>

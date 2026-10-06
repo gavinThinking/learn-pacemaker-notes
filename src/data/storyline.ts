@@ -40,7 +40,7 @@ export const storyline: Step[] = [
   },
   {
     stages: ["04", "10"],
-    what: "谁该当主，调度器看的是各节点的 promotion score：备库上的资源代理平时在 monitor 里经 attrd 把它写进 status 段（属性名 master-<资源名>），断电节点的那份在它离开时就被删掉。controld 按 transition 通过 OCF 协议调用资源代理执行 promote。",
+    what: "谁该当主，调度器看的是各节点的 promotion score：备库上的资源代理平时在 monitor 里经 attrd 把它写进 status 段（属性名 master-<资源名>），断电节点的那份在它离开时就被删掉。新主库所在节点的 controld 按 transition 让本机 execd 运行资源代理的 promote：在超时（默认 20 秒）内返回 0 才算成功，排在后面的 VIP 启动才放行；之后主角色的 monitor 期望返回 8。",
   },
   {
     stages: ["14"],
