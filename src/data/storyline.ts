@@ -20,7 +20,7 @@ export const storyline: Step[] = [
   },
   {
     stages: ["02", "13"],
-    what: "只剩一个节点、1 票：配了 two_node 门槛降到 1，这一侧保有 quorum（日志 Quorum retained），往下走 fencing；没配就失去 quorum，按 no-quorum-policy（默认 stop）停资源，也不去 fencing 断电的那台。",
+    what: "只剩一个节点、1 票：配了 two_node 门槛降到 1，这一侧保有 quorum（日志 Quorum retained），往下走 fencing；没配就失去 quorum：按 no-quorum-policy（默认 stop）连备库也停掉，取 freeze 或 demote 备库留着但不会被提升；没有 quorum 的一侧也不去 fencing 断电的那台，服务就此中断。",
   },
   {
     stages: ["09"],

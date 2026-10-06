@@ -141,6 +141,7 @@ export const layers: Layer[] = [
         no: "13",
         title: "no-quorum-policy 与脑裂",
         summary: "失去 quorum 的一侧该停、该冻结还是该降级，各自的代价。",
+        note: "13-no-quorum-policy",
       },
     ],
   },

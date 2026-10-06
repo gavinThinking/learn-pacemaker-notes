@@ -1,0 +1,190 @@
+---
+title: no-quorum-policy：失去 quorum 的一侧，拿自己的资源怎么办
+date: 2026-10-06
+summary: 网络把集群分成两半时，票数不过半的一侧失去 quorum。DC 把 have-quorum=0 写进 CIB，调度器从此只对 start 和 promote 两类动作设卡，stop 照常放行。卡多严由集群选项 no-quorum-policy 决定：默认 stop 让这一侧停掉全部资源；freeze 留着在跑的、不再启动新的；demote 把主角色降成备、其余停掉；ignore 当作还有 quorum；fence 让这一侧把自己的节点全部 fencing 掉，配了 SBD 时直接自重启。没有 quorum 的一侧也不去 fencing 已经不在线的节点，所以真正接手资源的只能是有 quorum 的另一侧。
+layer: L5
+stage: "13"
+upstream:
+  - label: lib/common/options.c：no-quorum-policy 的取值和默认值
+    href: https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/common/options.c#L163-L171
+  - label: lib/pengine/unpack.c：解析策略，fence 策略下 fencing 本侧节点
+    href: https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pengine/unpack.c#L313-L364
+  - label: lib/pengine/pe_actions.c：没有 quorum 时，哪些动作还能做
+    href: https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pengine/pe_actions.c#L289-L404
+  - label: lib/pengine/complex.c：资源的 requires 默认值
+    href: https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pengine/complex.c#L529-L595
+  - label: daemons/controld/controld_membership.c：写 have-quorum，失去 quorum 时自重启
+    href: https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/daemons/controld/controld_membership.c#L410-L435
+  - label: cts/scheduler：quorum-1/2/3、no_quorum_demote、suicide-* 回归用例
+    href: https://github.com/ClusterLabs/pacemaker/tree/Pacemaker-2.1.11/cts/scheduler/summary
+links:
+  - to: "01"
+    why: 网络分区时每一侧都把对面划出成员名单；成员名单只说明谁联系得上，两侧各自得到的名单不一样，要靠 quorum 决定哪一侧有资格做决定。
+  - to: "02"
+    why: 本篇的出发点是第 2 讲算出的「这一侧没有 quorum」；two_node、auto_tie_breaker 决定的是哪一侧保有 quorum，本篇讲另一侧接下来怎么做。
+  - to: "03"
+    why: 有没有 quorum 写在 CIB 根元素的 have-quorum 属性里，调度器读的是这个属性，不直接问 Corosync。
+  - to: "07"
+    why: demote 策略只对 promotable 资源保留实例：主角色被降成备，备实例继续跑，其余资源停掉。
+  - to: "08"
+    why: 各个策略的效果都体现为 transition 里的动作被标成 blocked，原因写着 due to no quorum 或 due to quorum freeze，用 crm_simulate 重放回归用例就能看到。
+  - to: "09"
+    why: 写 have-quorum 的是 DC；分区后两侧各选出自己的 DC，没有 quorum 的一侧也有 DC，它照样调用调度器，只是策略收紧。
+  - to: "12"
+    why: 没有 quorum 的一侧不能 fencing 已经不在线的节点，所以「接手对面资源」只会发生在有 quorum 的一侧；有 quorum 的一侧照样要先 fencing，不能指望对面已经按策略停好。
+  - to: "14"
+    why: PostgreSQL 主库所在的节点失去 quorum 时，默认策略会停掉主库，demote 策略只把它降成备库；PAF 的 promote 只会发生在有 quorum 的一侧。
+---
+
+第 2 讲算出了「这一侧有没有 quorum」，第 12 讲讲了有 quorum 的一侧怎样 fencing 对面再接手资源。中间还缺一块：**没有** quorum 的那一侧在做什么。它的节点没断电、进程还在、资源还在跑，只是联系不上多数派。本篇讲它怎样处理自己手上的资源，以及几种取值各自的代价。
+
+本篇的版本：Pacemaker 2.1.11。源码结论附链接，只依据文档的会单独说明。
+
+## 一句话
+
+网络分区（集群被网络故障切成互相联系不上的几块）之后，三件事由三套机制分别决定：
+
+<div class="table-scroll">
+
+| 问题 | 谁决定 | 在哪一讲 |
+| --- | --- | --- |
+| 这一侧有没有资格做决定 | quorum：票数过半 | 第 2 讲 |
+| 这一侧拿**自己**正在跑的资源怎么办 | `no-quorum-policy`，本篇 | 第 13 讲 |
+| **对面**的资源能不能在这一侧启动 | 先 fencing 对面，成功才行 | 第 12 讲 |
+
+</div>
+
+脑裂（split brain）指的是分区后两侧都以为自己该提供服务，同一个资源在两边同时运行——两个 PostgreSQL 主库各自接受写入，数据从此分叉。三套机制合起来防的就是这件事：只有一侧能过半，只有过半的一侧能 fencing 对面，没过半的一侧按 `no-quorum-policy` 收手。
+
+## have-quorum 怎样传到调度器
+
+调度器不直接问 Corosync。路径是：
+
+1. Corosync 的 votequorum 判定这一侧票数不到门槛，通知 Pacemaker，日志 `Quorum lost`（第 2 讲）。
+2. DC 上的 controld 在 `crm_update_quorum` 里把结果写成 CIB 根元素的 `have-quorum` 属性（[controld_membership.c L424-L435](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/daemons/controld/controld_membership.c#L424-L435)）。分区之后两侧各有自己的 DC（第 9 讲），没有 quorum 的一侧写的是 `have-quorum="0"`。
+3. controld 每次调用调度器时，把 `have-quorum` 随输入一起带过去；如果这个节点曾经有过 quorum、现在没有，还额外带上 `no-quorum-panic="1"`（[controld_schedulerd.c L486-L495](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/daemons/controld/controld_schedulerd.c#L486-L495)），后面 fence 策略会用到。
+4. 调度器读到 `have-quorum` 为假（[status.c L129-L133](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pengine/status.c#L129-L133)），策略又不是 `ignore` 时，打一条警告 `Fencing and resource management disabled due to lack of quorum`（[status.c L146-L151](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pengine/status.c#L146-L151)）。
+
+## 只有启动和提升需要 quorum
+
+调度器给每个动作定一个「需要什么才能执行」。规则很窄（[pe_actions.c L852-L875](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pengine/pe_actions.c#L852-L875)）：**只有 start 和 promote** 可能需要 quorum 或 fencing，stop、demote、monitor 一律什么都不需要。道理是：停止和降级只会让这一侧少做事，不会和对面冲突；启动和提升才可能让同一个资源在两边同时当家。
+
+start 和 promote 具体需要什么，看资源的 `requires` 元属性。不写时默认值按下面顺序取第一个成立的（[complex.c L529-L595](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pengine/complex.c#L529-L595)）：
+
+<div class="table-scroll">
+
+| 条件 | 默认 `requires` |
+| --- | --- |
+| 资源本身是 fence 设备 | `quorum` |
+| 集群开了 unfencing（共享存储类 fence 设备会开） | `unfencing` |
+| `stonith-enabled=true`（默认就是） | `fencing` |
+| `no-quorum-policy=ignore` | `nothing` |
+| 其他 | `quorum` |
+
+</div>
+
+在 2.1.11 的代码里，`quorum`、`fencing`、`unfencing` 在没有 quorum 时待遇相同：都交给 `no-quorum-policy` 处理；只有 `nothing` 直接放行（[pe_actions.c L357-L403](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pengine/pe_actions.c#L357-L403)）。按文档，`fencing` 还多一条要求：启动前所有状态不明的节点都已 fencing（只依据文档；效果和第 12 讲里「启动排在 fencing 之后」一致）。所以给某个资源单独写 `requires=nothing`，它就不受 quorum 约束；只有确定它在两边同时跑也没有害处（例如只读的监控探针）才能这么做。
+
+## 五种取值
+
+<Diagram
+  name="no-quorum-policy"
+  caption="失去 quorum 之后的处理。DC 写 have-quorum，调度器只对 start 和 promote 设卡，卡多严看 no-quorum-policy。"
+  verified="source"
+  rev="1"
+  gaps={[
+    "没画 requires=nothing 的资源：它们的 start 和 promote 也直接放行",
+    "没画 fence 策略在节点从没有过 quorum 时退回 stop",
+  ]}
+/>
+
+选项定义在 [options.c L163-L171](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/common/options.c#L163-L171)，默认 `stop`。解析在 [unpack.c L313-L364](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pengine/unpack.c#L313-L364)，每种取值落到动作上的效果在 [pe_actions.c L289-L404](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pengine/pe_actions.c#L289-L404)。下表右列是上游回归用例（`cts/scheduler/summary/` 下）里的实际输出，用第 8 讲的 `crm_simulate` 可以重放：
+
+<div class="table-scroll">
+
+| 取值 | start / promote | 在跑的资源 | 回归用例里看到的 |
+| --- | --- | --- | --- |
+| `stop`（默认） | 都不能做，原因 `no quorum` | 停掉 | [quorum-3](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/cts/scheduler/summary/quorum-3.summary)：`Stop rsc1 ( node1 ) due to no quorum`，没在跑的 rsc3 `Start ... due to no quorum (blocked)` |
+| `freeze` | 资源没在跑、或要提升角色时不能做，原因 `quorum freeze` | 留着；还可以在这一侧内部挪动 | [quorum-2](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/cts/scheduler/summary/quorum-2.summary)：在跑的 rsc2 照样 `Move ( node1 -> node2 )`，没在跑的 rsc3 `Start ... due to quorum freeze (blocked)` |
+| `demote` | promotable 资源最多到备角色；其他资源同 `stop` | 主降成备，备留着，其余停掉 | [no_quorum_demote](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/cts/scheduler/summary/no_quorum_demote.summary)：`Demote rsc1:0 ( Promoted -> Unpromoted rhel7-1 )`，普通资源 rsc2 和 fence 设备 `Stop ... due to no quorum` |
+| `ignore` | 照常 | 照常 | [quorum-1](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/cts/scheduler/summary/quorum-1.summary)：没有 quorum，调度结果和有 quorum 时一样 |
+| `fence`（旧名 `suicide`） | — | 这一侧所有在线节点都被 fencing | [suicide-needed-inquorate](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/cts/scheduler/summary/suicide-needed-inquorate.summary)：三个节点都 `Fence (reboot) ... 'cluster does not have quorum'` |
+
+</div>
+
+逐个看细节和代价。
+
+**stop**：最保守。代价是这一侧的服务全部中断，包括 fence 设备——fence 设备默认 `requires=quorum`，没有 quorum 也会被停掉。在跑的资源为什么会被停，上表只给出了回归用例的结果，代码路径见文末「还没核对的」。
+
+**freeze**：判断条件是「资源当前不在运行，或者下一个角色比当前角色高」才拦（[pe_actions.c L388-L398](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pengine/pe_actions.c#L388-L398)）。角色提升另有两处显式拦截：普通资源打 `Resource ... cannot be elevated from ... due to no-quorum-policy=freeze`（[pcmk_sched_primitive.c L483-L493](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pacemaker/pcmk_sched_primitive.c#L483-L493)），promotable 的实例打 `Clone instance ... cannot be promoted without quorum`（[pcmk_sched_promotable.c L1019-L1025](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pacemaker/pcmk_sched_promotable.c#L1019-L1025)）。好处是服务不中断；代价是如果对面过了半、又 fencing 不了这一侧（比如没配 fencing），对面会把同样的资源启动起来，两边同时跑。所以 freeze 只在 fencing 可靠时才安全。
+
+**demote**：在 `effective_quorum_policy` 里实现（[pe_actions.c L289-L313](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pengine/pe_actions.c#L289-L313)）：promotable 资源的实例把下一个角色压到备（unpromoted），然后按 `ignore` 放行；其他资源按 `stop` 处理。适合数据库：失去 quorum 的主库不再接受写入，但作为备库的进程和数据都还在，网络恢复后不用从头启动。
+
+**ignore**：这一侧当作自己有 quorum。不止资源照常调度——第 12 讲的 `pe_can_fence` 在 `ignore` 下也放行，少数派会去 fencing 不在线的多数派节点（[utils.c L36-L90](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pengine/utils.c#L36-L90)）。三节点集群里孤立的那一台，可能把另外两台健康的节点关掉。两节点集群需要的「只剩一台也能接手」，应该用 votequorum 的 `two_node` 来给（第 2 讲），它配合 `wait_for_all` 防住了一台机器刚开机、谁都没见过就开始 fencing 的情况；`ignore` 没有这层保护。
+
+**fence**：只在 `stonith-enabled=true` 时有效，否则配置报错 `Resetting no-quorum-policy to 'stop' because fencing is disabled`。生效时调度器把这一侧每个在线节点都判为要 fencing，原因 `cluster does not have quorum`（[unpack.c L1312-L1321](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pengine/unpack.c#L1312-L1321)）。这里能 fencing 是因为目标都在线：`pe_can_fence` 在没有 quorum 时只拦不在线的节点。两个保护：
+
+- 节点**从来没有过** quorum（例如集群刚启动、只起了一台），输入里没有 `no-quorum-panic`，策略退回 `stop`，日志 `Resetting no-quorum-policy to 'stop': cluster has never had quorum`。回归用例 [suicide-not-needed-never-quorate](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/cts/scheduler/summary/suicide-not-needed-never-quorate.summary) 里三个节点都没被 fencing。
+- 配了 SBD（用看门狗让节点自己重启的 fencing 方式）时，controld 读配置时就记下「失去 quorum 就自重启」（[controld_control.c L577-L582](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/daemons/controld/controld_control.c#L577-L582)）。之后一旦从有 quorum 变成没有，`crm_update_quorum` 当场调用 `pcmk__panic`（[controld_membership.c L415-L422](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/daemons/controld/controld_membership.c#L415-L422)），通知 sbd 立刻重启本机（[watchdog.c L169-L195](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/common/watchdog.c#L169-L195)），不等调度器排 transition。
+
+fence 策略的好处是对面不用等这一侧慢慢停资源：它确定已经重启。代价是每次分区，少数派节点都要重启一次。
+
+## 三种分区，各自怎样收场
+
+下面都假设 `stonith-enabled=true`、fence 设备可用、策略取默认 `stop`。
+
+<div class="table-scroll">
+
+| 集群 | 分区 | 多数派一侧 | 少数派一侧 |
+| --- | --- | --- | --- |
+| 3 节点 | 2 \| 1 | 2 票过半，保有 quorum；把孤立节点判为 `peer is no longer part of the cluster`，fencing 成功后在本侧启动它的资源 | 1 票，失去 quorum；停掉自己的资源；不去 fencing 不在线的两台 |
+| 4 节点，没配 `auto_tie_breaker` | 2 \| 2 | 两侧都是 2 票，门槛 3，都没有 quorum | 同左：两侧都停掉全部资源，谁也不 fencing 谁，服务全停 |
+| 2 节点，配了 `two_node` | 1 \| 1 | 门槛降到 1，两侧都保有 quorum，都去 fencing 对面 | 同左；靠第 12 讲的 `pcmk_delay_base` 或 `priority-fencing-delay` 让一侧先动手 |
+
+</div>
+
+第一行有一个容易误解的地方：少数派会按 `stop` 停掉资源，多数派为什么还要 fencing 它？因为多数派看不到少数派——它不知道对面的策略是什么、stop 有没有成功、对面是不是根本卡死了。在多数派眼里，孤立节点就是「状态不明」，只有 fencing 成功才能确定它已停（第 12 讲）。少数派的策略只是缩短两边都在跑的那段时间，不能代替 fencing。
+
+第二行是 `freeze` 有用的场景：两侧都没有 quorum，谁也不 fencing 谁，也就没人接手对面的资源。这时 `stop` 让服务全停；`freeze` 让每一侧继续跑原来在跑的，不会出现两边跑同一个资源的情况，因为没有一侧能启动新东西。第 2 讲的 `auto_tie_breaker` 则从另一个方向解决：让节点 ID 最小的那一侧保有 quorum。
+
+## 回到主线
+
+主线是两节点 PostgreSQL 集群，主库所在的 node1 断电。对 node2 来说，这和「网络断了」看起来一样：node1 从成员名单里消失。
+
+<div class="table-scroll">
+
+| 配置 | node2 有没有 quorum | 结果 |
+| --- | --- | --- |
+| `two_node: 1`（推荐） | 有，日志 `Quorum retained` | fencing node1（第 12 讲），成功后在 node2 上 promote |
+| 没配 `two_node`，策略 `stop` | 没有（1 票，门槛 2） | node2 上的备库也被停掉；不 fencing node1；服务全停 |
+| 没配 `two_node`，策略 `freeze` 或 `demote` | 没有 | 备库继续跑，但不会被提升成主库；不 fencing node1；没有主库 |
+| 没配 `two_node`，策略 `ignore` | 当作有 | fencing node1、提升备库，看起来能用；但网络分区时 node1 也会这么做；`wait_for_all` 默认随 `two_node` 才打开，这里也没有它挡住刚开机的单台 |
+
+</div>
+
+所以两节点集群的答案在 quorum 层（第 2 讲的 `two_node`），不在 `no-quorum-policy`。`no-quorum-policy` 管的是三节点以上集群里真正的少数派。
+
+## 读日志时看哪里
+
+<div class="table-scroll">
+
+| 想知道 | 日志里找 |
+| --- | --- |
+| 这一侧失去了 quorum | Pacemaker 各守护进程：`Quorum lost`；调度器：`Fencing and resource management disabled due to lack of quorum` |
+| 当前用的是哪个策略 | 调度器：`On loss of quorum: Stop ALL resources`（stop、freeze、demote 是 debug 级，fence、ignore 是 notice 级） |
+| 策略被改成了 stop | `Resetting no-quorum-policy to 'stop' because fencing is disabled`，或 `... cluster has never had quorum` |
+| 哪些动作被拦了 | `crm_simulate` 或 transition 摘要：`due to no quorum (blocked)`、`due to quorum freeze (blocked)` |
+| freeze 拦住了提升 | `Resource <资源> cannot be elevated from ... due to no-quorum-policy=freeze`、`Clone instance <实例> cannot be promoted without quorum` |
+| 不 fencing 对面 | 调度器：`Unclean nodes will not be fenced until quorum is attained or no-quorum-policy is set to ignore` |
+| fence 策略在 fencing 本侧 | 调度器：`Cluster node <节点> will be fenced: cluster does not have quorum` |
+| SBD 下直接自重启 | `Signaling sbd[<PID>] to panic the system: crm_update_quorum` |
+
+</div>
+
+## 还没核对的
+
+- 本篇没有在真实集群里制造网络分区，结论来自代码和上游回归用例。
+- `stop` 策略下，在跑的资源从「start 不能执行」变成「排一个 stop」的那段调度逻辑没有追到具体函数，只用 quorum-3 的输出作证据。
+- `fence` 策略没配 SBD 时，本侧节点靠哪个 fence 设备去 fencing 自己——fence 设备资源本身也因没有 quorum 被停——fenced 是否仍能用它，没有核对。
+- `requires=fencing` 比 `quorum` 多出的「启动前不明节点都已 fencing」，本篇只依据文档和第 12 讲的排序推断，没有单独找到对应代码。
+- 有 Pacemaker Remote 节点时的 `fence-remote-without-quorum` 选项没有展开。

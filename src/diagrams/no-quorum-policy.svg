@@ -1,0 +1,107 @@
+<svg data-lpn-source-sha="97783198196d06d6" width="100%" id="nq" viewBox="0 0 640 480" style="min-width: 560px" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="nq-title nq-desc">
+  <title id="nq-title">失去 quorum 之后，这一侧拿自己的资源怎么办</title>
+  <desc id="nq-desc">Corosync 报告这一侧票数不到门槛，DC 的 controld 把 have-quorum=0 写进 CIB，并在调用调度器时随输入带过去。调度器只对 start 和 promote 两类动作检查 quorum，stop 等其他动作照常放行。这两类动作能不能做由 no-quorum-policy 决定：stop（默认）让它们都不能做，已在运行的资源被停掉；freeze 只挡住新启动和角色提升，已在运行的资源留着；demote 把主角色降成备，其余资源停掉；ignore 当作仍有 quorum 照常调度；fence 让这一侧把自己的全部在线节点 fencing 掉，前提是开着 fencing，否则按 stop 处理。</desc>
+  <defs>
+    <style>
+      #nq {
+        --nq-paper: var(--paper-raised, #ffffff);
+        --nq-node: var(--paper, #fdfcf9);
+        --nq-paper-2: var(--paper-muted, #f6f3ec);
+        --nq-ink: var(--ink, #22201b);
+        --nq-muted: var(--ink-muted, #6a6459);
+        --nq-soft: var(--ink-subtle, #7a7365);
+        --nq-rule: var(--line, #e7e1d5);
+        --nq-accent: var(--brand, #2f5fd0);
+        --nq-tint: var(--brand-light, #eef2fb);
+        --nq-sans: var(--font-body, "Inter Variable", Inter, -apple-system, "PingFang SC", "Noto Sans SC", sans-serif);
+        --nq-mono: var(--font-mono, ui-monospace, SFMono-Regular, Consolas, monospace);
+      }
+      #nq .nq-bg { fill: var(--nq-paper); }
+      #nq .nq-band { fill: var(--nq-paper-2); }
+      #nq .nq-step { fill: var(--nq-node); stroke: var(--nq-ink); stroke-width: 1; }
+      #nq .nq-end { fill: color-mix(in srgb, var(--nq-ink) 3%, var(--nq-node)); stroke: color-mix(in srgb, var(--nq-ink) 30%, transparent); stroke-width: 1; }
+      #nq .nq-focal { fill: var(--nq-tint); stroke: var(--nq-accent); stroke-width: 1.2; }
+      #nq .nq-arrow { fill: none; stroke: var(--nq-muted); stroke-width: 1.2; }
+      #nq .nq-dashed { stroke-dasharray: 5 4; }
+      #nq .nq-head { fill: var(--nq-muted); }
+      #nq .nq-mask { fill: var(--nq-paper); }
+      #nq .nq-name { font: 600 12px var(--nq-sans); fill: var(--nq-ink); }
+      #nq .nq-sub { font: 400 10px var(--nq-sans); fill: var(--nq-muted); }
+      #nq .nq-mono { font: 400 9px var(--nq-mono); fill: var(--nq-muted); }
+      #nq .nq-tag { font: 600 9px var(--nq-mono); fill: var(--nq-soft); letter-spacing: 0.08em; }
+      #nq .nq-label { font: 400 10px var(--nq-sans); fill: var(--nq-muted); }
+      #nq .nq-rule { stroke: var(--nq-rule); stroke-width: 0.8; }
+    </style>
+    <marker id="nq-arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+      <polygon class="nq-head" points="0 0, 8 3, 0 6"/>
+    </marker>
+  </defs>
+
+  <rect class="nq-bg" width="640" height="480"/>
+
+  <!-- 连线 -->
+  <path class="nq-arrow" d="M184 72 H240" marker-end="url(#nq-arrow)"/>
+  <path class="nq-arrow" d="M400 72 H456" marker-end="url(#nq-arrow)"/>
+  <path class="nq-arrow" d="M536 104 V176" marker-end="url(#nq-arrow)"/>
+  <path class="nq-arrow" d="M80 240 V312" marker-end="url(#nq-arrow)"/>
+  <path class="nq-arrow" d="M200 240 V312" marker-end="url(#nq-arrow)"/>
+  <path class="nq-arrow" d="M320 240 V312" marker-end="url(#nq-arrow)"/>
+  <path class="nq-arrow" d="M440 240 V312" marker-end="url(#nq-arrow)"/>
+  <path class="nq-arrow" d="M560 240 V312" marker-end="url(#nq-arrow)"/>
+
+  <rect class="nq-mask" x="544" y="134" width="64" height="12" rx="2"/>
+  <text class="nq-label" x="546" y="144">stop 照常放行</text>
+
+  <!-- 第一行 -->
+  <rect class="nq-step" x="24" y="40" width="160" height="64" rx="6"/>
+  <text class="nq-name" x="104" y="62" text-anchor="middle">这一侧失去 quorum</text>
+  <text class="nq-mono" x="104" y="78" text-anchor="middle">Quorum lost</text>
+  <text class="nq-sub" x="104" y="94" text-anchor="middle">票数不到门槛（第 2 讲）</text>
+
+  <rect class="nq-step" x="240" y="40" width="160" height="64" rx="6"/>
+  <text class="nq-name" x="320" y="62" text-anchor="middle">DC 写进 CIB</text>
+  <text class="nq-mono" x="320" y="78" text-anchor="middle">have-quorum=0</text>
+  <text class="nq-sub" x="320" y="94" text-anchor="middle">随输入一起交给调度器</text>
+
+  <rect class="nq-step" x="456" y="40" width="160" height="64" rx="6"/>
+  <text class="nq-name" x="536" y="62" text-anchor="middle">调度器先看动作类型</text>
+  <text class="nq-mono" x="536" y="78" text-anchor="middle">start · promote</text>
+  <text class="nq-sub" x="536" y="94" text-anchor="middle">只有这两类要 quorum</text>
+
+  <!-- 第二行 -->
+  <rect class="nq-focal" x="24" y="176" width="592" height="64" rx="6"/>
+  <text class="nq-name" x="320" y="198" text-anchor="middle">这两类动作能不能做，由一个集群选项决定</text>
+  <text class="nq-mono" x="320" y="214" text-anchor="middle">no-quorum-policy</text>
+  <text class="nq-sub" x="320" y="230" text-anchor="middle">fence 要求开着 fencing，否则按 stop 处理</text>
+
+  <!-- 第三行 -->
+  <rect class="nq-step" x="24" y="312" width="112" height="64" rx="6"/>
+  <text class="nq-name" x="80" y="334" text-anchor="middle">全部停掉</text>
+  <text class="nq-mono" x="80" y="350" text-anchor="middle">stop（默认）</text>
+  <text class="nq-sub" x="80" y="366" text-anchor="middle">新的也不启动</text>
+
+  <rect class="nq-step" x="144" y="312" width="112" height="64" rx="6"/>
+  <text class="nq-name" x="200" y="334" text-anchor="middle">冻结</text>
+  <text class="nq-mono" x="200" y="350" text-anchor="middle">freeze</text>
+  <text class="nq-sub" x="200" y="366" text-anchor="middle">在跑的留着</text>
+
+  <rect class="nq-step" x="264" y="312" width="112" height="64" rx="6"/>
+  <text class="nq-name" x="320" y="334" text-anchor="middle">主降成备</text>
+  <text class="nq-mono" x="320" y="350" text-anchor="middle">demote</text>
+  <text class="nq-sub" x="320" y="366" text-anchor="middle">其余资源停掉</text>
+
+  <rect class="nq-step" x="384" y="312" width="112" height="64" rx="6"/>
+  <text class="nq-name" x="440" y="334" text-anchor="middle">照常调度</text>
+  <text class="nq-mono" x="440" y="350" text-anchor="middle">ignore</text>
+  <text class="nq-sub" x="440" y="366" text-anchor="middle">可能两边都写</text>
+
+  <rect class="nq-step" x="504" y="312" width="112" height="64" rx="6"/>
+  <text class="nq-name" x="560" y="334" text-anchor="middle">fencing 自己</text>
+  <text class="nq-mono" x="560" y="350" text-anchor="middle">fence</text>
+  <text class="nq-sub" x="560" y="366" text-anchor="middle">这一侧全部重启</text>
+
+  <!-- 图例 -->
+  <line class="nq-rule" x1="24" y1="440" x2="616" y2="440"/>
+  <rect class="nq-focal" x="24" y="452" width="24" height="12" rx="2"/>
+  <text class="nq-label" x="54" y="462">重点：这个选项只管启动和提升，停止从来不需要 quorum</text>
+</svg>
