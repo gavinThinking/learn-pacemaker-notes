@@ -15,6 +15,17 @@ upstream:
     href: https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/cluster/corosync.c#L267-L334
   - label: daemons/controld/controld_callbacks.c：controld 处理节点变化
     href: https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/daemons/controld/controld_callbacks.c#L103
+links:
+  - to: "02"
+    why: 这篇只交出成员名单；名单里剩下的节点够不够资格做决定，由 quorum 判断。
+  - to: "09"
+    why: 掉的是 DC 时，controld 收到成员变化后发起选举，选举怎么进行在这一阶段。
+  - to: "08"
+    why: 本节点是 DC 时，节点掉线会中止正在执行的 transition 并重新计算。
+  - to: "12"
+    why: 没打招呼就消失的节点（日志里的 failed:）状态未知，要靠 fencing 确认它真的停了。
+  - to: "13"
+    why: 网络分区时两边各自形成成员名单，没有 quorum 的一边怎么办由 no-quorum-policy 决定。
 ---
 
 Pacemaker 自己不探测节点死活。它做的每个决定——谁当 DC（Designated Controller，集群里负责做决定的那个节点）、要不要 fencing、资源搬到哪——都建立在 Corosync 告诉它的成员名单上。所以第一站是弄清楚：Corosync 什么时候、凭什么认定一个节点不在了，又是怎么把这件事告诉 Pacemaker 的。

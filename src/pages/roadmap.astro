@@ -46,7 +46,7 @@ import { sketches } from "../data/sketches";
           </header>
 
           {layer.stages.map((stage) => (
-            <article class="cp" data-status={statusOf(stage)}>
+            <article class="cp" id={`stage-${stage.no}`} data-status={statusOf(stage)}>
               <span class="cp__no">{stage.no}</span>
               <div>
                 <h3 class="cp__title">{stage.title}</h3>

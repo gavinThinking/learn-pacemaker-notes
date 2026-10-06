@@ -1,16 +1,24 @@
 ---
 import { getCollection, render } from "astro:content";
 
+import { edgesOf, stageRef } from "../../data/network";
+
 import Diagram from "../../components/Diagram.astro";
 import Sketch from "../../components/Sketch.astro";
 import Base from "../../layouts/Base.astro";
 
 export async function getStaticPaths() {
   const notes = await getCollection("notes");
-  return notes.map((note) => ({ params: { slug: note.id }, props: { note } }));
+  const edges = edgesOf(notes);
+  return notes.map((note) => ({
+    params: { slug: note.id },
+    props: { note, backlinks: edges.filter((e) => e.to === note.data.stage) },
+  }));
 }
 
-const { note } = Astro.props;
+const { note, backlinks } = Astro.props;
+const outlinks = note.data.links.map((l) => ({ ...stageRef(l.to), why: l.why }));
+const inlinks = backlinks.map((e) => ({ ...stageRef(e.from), why: e.why }));
 const { Content } = await render(note);
 ---
 
@@ -41,6 +49,42 @@ const { Content } = await render(note);
                 <li>{e}</li>
               ))}
             </ul>
+          </>
+        )
+      }
+
+      {
+        (outlinks.length > 0 || inlinks.length > 0) && (
+          <>
+            <h2>和其他阶段的连接</h2>
+            {outlinks.length > 0 && (
+              <>
+                <p>这篇连到：</p>
+                <ul>
+                  {outlinks.map((s) => (
+                    <li>
+                      <a href={s.href}>阶段 {s.no} · {s.title}</a>
+                      {!s.written && "（待写）"}：{s.why}
+                    </li>
+                  ))}
+                </ul>
+              </>
+            )}
+            {inlinks.length > 0 && (
+              <>
+                <p>指向这篇的：</p>
+                <ul>
+                  {inlinks.map((s) => (
+                    <li>
+                      <a href={s.href}>阶段 {s.no} · {s.title}</a>：{s.why}
+                    </li>
+                  ))}
+                </ul>
+              </>
+            )}
+            <p>
+              全部连接和贯穿各阶段的故障主线见<a href="/network/">知识网络</a>。
+            </p>
           </>
         )
       }

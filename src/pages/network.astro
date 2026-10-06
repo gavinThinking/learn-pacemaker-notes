@@ -1,0 +1,76 @@
+---
+import { getCollection } from "astro:content";
+
+import Base from "../layouts/Base.astro";
+import { edgesOf, stageNos, stageRef } from "../data/network";
+import { scenario, storyline } from "../data/storyline";
+
+const edges = edgesOf(await getCollection("notes"));
+const linked = new Set(edges.flatMap((e) => [e.from, e.to]));
+const checked = (stages: string[]) => stages.every((no) => stageRef(no).written);
+---
+
+<Base
+  title="知识网络"
+  description="一个故障串起全部阶段，以及每篇手记和其他阶段是什么关系。"
+>
+  <div class="shell page-head">
+    <p class="eyebrow">知识网络</p>
+    <h1 class="display">一个故障，串起全部阶段</h1>
+    <p class="lede">
+      单独的知识点记不牢，连起来才牢。这一页有两部分：一条贯穿全部阶段的故障主线，和手记之间写明了关系的连接。
+    </p>
+    <p class="note-meta">
+      {edges.length} 条连接 · {linked.size} / {stageNos.length} 个阶段已连上 ·
+      主线 {storyline.filter((s) => checked(s.stages)).length} / {storyline.length} 步已由手记核对
+    </p>
+  </div>
+
+  <div class="shell section">
+    <h2 class="section__title">主线</h2>
+    <p class="lede">{scenario}</p>
+    {storyline.map((step, i) => (
+      <article class="cp" data-status={checked(step.stages) ? "done" : "todo"}>
+        <span class="cp__no">{String(i + 1).padStart(2, "0")}</span>
+        <div>
+          <h3 class="cp__title">{step.what}</h3>
+          <p class="cp__links">
+            {step.stages.map(stageRef).map((s) => (
+              <a href={s.href}>阶段 {s.no} · {s.title}</a>
+            ))}
+          </p>
+        </div>
+        <span class="pill" data-status={checked(step.stages) ? "done" : "todo"}>
+          {checked(step.stages) ? "手记已核对" : "动笔前的理解"}
+        </span>
+      </article>
+    ))}
+  </div>
+
+  <div class="shell section">
+    <h2 class="section__title">连接</h2>
+    <p class="lede">每条连接都写明两个阶段是什么关系。指向没写的阶段，就是下一篇要回答的问题。</p>
+    <div class="prose">
+      <div class="table-scroll">
+        <table>
+          <thead>
+            <tr><th>从</th><th>到</th><th>关系</th></tr>
+          </thead>
+          <tbody>
+            {edges.map((e) => {
+              const from = stageRef(e.from);
+              const to = stageRef(e.to);
+              return (
+                <tr>
+                  <td><a href={from.href}>{from.no} · {from.title}</a></td>
+                  <td><a href={to.href}>{to.no} · {to.title}</a>{!to.written && "（待写）"}</td>
+                  <td>{e.why}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</Base>
