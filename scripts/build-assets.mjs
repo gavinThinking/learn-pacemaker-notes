@@ -1,6 +1,7 @@
 /**
- * 构建期资产：分享卡片 PNG + 架构图 SVG。都要真实浏览器（CJK 字形、mermaid 要 DOM），
- * 所以本地生成、产物入库，`make check` 只校验产物没有落后于源文件。
+ * 构建期资产：分享卡片 PNG + 架构图 SVG。分享卡片和 Mermaid 图要真实浏览器（CJK 字形、
+ * mermaid 要 DOM），所以本地生成、产物入库，`make check` 只校验产物没有落后于源文件。
+ * src/diagrams/ 下的 .html 是 diagram-design 画的图，直接取出里面的 <svg>。
  *
  *   npm run assets        重新生成
  *   npm run assets:check  校验
@@ -77,11 +78,21 @@ async function renderOgCard(browser, check) {
   return 0;
 }
 
+/**
+ * .html 是 diagram-design 手写的 SVG 图：取页面里第一个 <svg>，不经过浏览器。
+ * 颜色写成站点 CSS 变量，嵌进页面后跟着站点切深浅色。
+ */
+function extractSvg(html, file) {
+  const m = html.match(/<svg\b[\s\S]*?<\/svg>/);
+  if (!m) throw new Error(`${file} 里没有 <svg>`);
+  return m[0];
+}
+
 async function renderDiagrams(browser, check) {
-  const files = (await readdir(diagramsDir)).filter((f) => f.endsWith(".mmd"));
+  const files = (await readdir(diagramsDir)).filter((f) => /\.(mmd|html)$/.test(f));
   let stale = 0;
   let page;
-  if (!check) {
+  if (!check && files.some((f) => f.endsWith(".mmd"))) {
     page = await browser.newPage();
     // 量字和展示必须用同一套字体，否则节点框按回退字体算宽、按 Inter 显示，文字会被截断。
     await page.setContent("<!doctype html><html><body></body></html>");
@@ -95,7 +106,8 @@ async function renderDiagrams(browser, check) {
   for (const file of files) {
     const src = await readFile(join(diagramsDir, file), "utf8");
     const sha = hashOf(src.trim());
-    const outPath = join(diagramsDir, file.replace(/\.mmd$/, ".svg"));
+    const outName = file.replace(/\.(mmd|html)$/, ".svg");
+    const outPath = join(diagramsDir, outName);
 
     if (check) {
       const ok =
@@ -106,14 +118,16 @@ async function renderDiagrams(browser, check) {
       continue;
     }
 
-    const svg = await page.evaluate(async ([text, FONT]) => {
-      const m = window.mermaid;
-      m.initialize({ startOnLoad: false, theme: "neutral", fontFamily: FONT });
-      const { svg } = await m.render("d" + Math.random().toString(36).slice(2), text);
-      return svg;
-    }, [src, BODY_FONT]);
+    const svg = file.endsWith(".html")
+      ? extractSvg(src, file)
+      : await page.evaluate(async ([text, FONT]) => {
+          const m = window.mermaid;
+          m.initialize({ startOnLoad: false, theme: "neutral", fontFamily: FONT });
+          const { svg } = await m.render("d" + Math.random().toString(36).slice(2), text);
+          return svg;
+        }, [src, BODY_FONT]);
 
-    // 去掉 mermaid 写死的宽高，让 SVG 跟着容器自适应。只改根 <svg> 标签：
+    // 去掉写死的宽高，让 SVG 跟着容器自适应。只改根 <svg> 标签：
     // 根标签通常没有 height，全文匹配会改到图里第一个 <rect>。
     const responsive = svg.replace(/^<svg\b[^>]*>/, (tag) =>
       tag
@@ -121,7 +135,7 @@ async function renderDiagrams(browser, check) {
         .replace("<svg ", `<svg data-${STAMP}="${sha}" width="100%" `),
     );
     await writeFile(outPath, responsive + "\n");
-    console.log(`  ${file.padEnd(14)} → ${file.replace(/\.mmd$/, ".svg")}`);
+    console.log(`  ${file.padEnd(30)} → ${outName}`);
   }
   await page?.close();
   return stale;

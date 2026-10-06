@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>成员变化传到 Pacemaker</title>
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400&family=Inter:wght@400;600&display=swap" rel="stylesheet">
+  <style>
+    /* 和 src/styles/tokens.css 同一套令牌；嵌进站点后 SVG 直接用站点的变量。 */
+    :root {
+      --paper: #fdfcf9; --paper-raised: #ffffff; --paper-muted: #f6f3ec; --ink: #22201b; --ink-muted: #6a6459;
+      --ink-subtle: #7a7365; --line: #e7e1d5; --brand: #2f5fd0; --brand-light: #eef2fb;
+      --font-display: Fraunces, "Songti SC", "Noto Serif SC", Georgia, serif;
+      --font-body: Inter, -apple-system, BlinkMacSystemFont, "PingFang SC", "Noto Sans SC", sans-serif;
+      --font-mono: ui-monospace, SFMono-Regular, Consolas, monospace;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --paper: #16150f; --paper-raised: #1f1e17; --paper-muted: #1d1c15; --ink: #f2efe6; --ink-muted: #b3ac9c;
+        --ink-subtle: #8b8474; --line: #34322a; --brand: #8fabf0; --brand-light: #1c2237;
+      }
+    }
+    body { margin: 0; padding: 3rem 1rem; background: var(--paper-raised); color: var(--ink); font-family: var(--font-body); }
+    .frame { max-width: 640px; margin: 0 auto; }
+    .eyebrow { font: 500 0.66rem var(--font-mono); letter-spacing: 0.18em; text-transform: uppercase; color: var(--ink-subtle); margin: 0 0 0.5rem; }
+    h1 { font: 400 1.75rem/1.2 var(--font-display); margin: 0 0 1.5rem; }
+    .canvas { overflow-x: auto; }
+  </style>
+</head>
+<body>
+<main class="frame">
+  <p class="eyebrow">Flowchart · 阶段 01</p>
+  <h1>成员变化传到 Pacemaker</h1>
+  <div class="canvas">
+<svg id="mtp" viewBox="0 0 640 700" style="min-width: 560px" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="mtp-title mtp-desc">
+  <title id="mtp-title">Corosync 的成员变化怎么传到 Pacemaker</title>
+  <desc id="mtp-desc">Totem 形成新成员后先后发出 TRANSITIONAL 和 REGULAR 两次成员变化，分别交给 Corosync 的 quorum 服务和 CPG。quorum 服务回答节点在不在，由 Pacemaker 的 quorum_notification_cb 接收，没出现的节点标成 lost；CPG 回答各节点的 Pacemaker 进程在不在组里，由 pcmk__cpg_confchg_cb 接收。两路通知汇到 pacemaker-controld 的 peer_update_callback：掉的是 DC 就发起选举，本节点是 DC 就中止当前 transition 重新计算。</desc>
+  <defs>
+    <style>
+      #mtp {
+        --mtp-paper: var(--paper-raised, #ffffff);
+        --mtp-node: var(--paper, #fdfcf9);
+        --mtp-paper-2: var(--paper-muted, #f6f3ec);
+        --mtp-ink: var(--ink, #22201b);
+        --mtp-muted: var(--ink-muted, #6a6459);
+        --mtp-soft: var(--ink-subtle, #7a7365);
+        --mtp-rule: var(--line, #e7e1d5);
+        --mtp-accent: var(--brand, #2f5fd0);
+        --mtp-tint: var(--brand-light, #eef2fb);
+        --mtp-sans: var(--font-body, "Inter Variable", Inter, -apple-system, "PingFang SC", "Noto Sans SC", sans-serif);
+        --mtp-mono: var(--font-mono, ui-monospace, SFMono-Regular, Consolas, monospace);
+      }
+      #mtp .mtp-bg { fill: var(--mtp-paper); }
+      #mtp .mtp-zone { fill: var(--mtp-paper-2); stroke: var(--mtp-rule); stroke-width: 1; }
+      #mtp .mtp-step { fill: var(--mtp-node); stroke: var(--mtp-ink); stroke-width: 1; }
+      #mtp .mtp-end { fill: color-mix(in srgb, var(--mtp-ink) 3%, var(--mtp-node)); stroke: color-mix(in srgb, var(--mtp-ink) 30%, transparent); stroke-width: 1; }
+      #mtp .mtp-focal { fill: var(--mtp-tint); stroke: var(--mtp-accent); stroke-width: 1.2; }
+      #mtp .mtp-arrow { fill: none; stroke: var(--mtp-muted); stroke-width: 1.2; }
+      #mtp .mtp-head { fill: var(--mtp-muted); }
+      #mtp .mtp-mask { fill: var(--mtp-paper-2); }
+      #mtp .mtp-name { font: 600 12px var(--mtp-sans); fill: var(--mtp-ink); }
+      #mtp .mtp-sub { font: 400 10px var(--mtp-sans); fill: var(--mtp-muted); }
+      #mtp .mtp-mono { font: 400 9px var(--mtp-mono); fill: var(--mtp-muted); }
+      #mtp .mtp-eyebrow { font: 500 8px var(--mtp-mono); letter-spacing: 0.18em; fill: var(--mtp-soft); }
+      #mtp .mtp-label { font: 400 10px var(--mtp-sans); fill: var(--mtp-muted); }
+      #mtp .mtp-rule { stroke: var(--mtp-rule); stroke-width: 0.8; }
+    </style>
+    <marker id="mtp-arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+      <polygon class="mtp-head" points="0 0, 8 3, 0 6"/>
+    </marker>
+  </defs>
+
+  <rect class="mtp-bg" width="640" height="700"/>
+
+  <!-- 两个程序的边界 -->
+  <rect class="mtp-zone" x="24" y="16" width="592" height="188" rx="8"/>
+  <text class="mtp-eyebrow" x="40" y="36">COROSYNC 3.1.10</text>
+  <rect class="mtp-zone" x="24" y="220" width="592" height="424" rx="8"/>
+  <text class="mtp-eyebrow" x="40" y="240">PACEMAKER 2.1.11</text>
+
+  <!-- 连线（先画，压在框下面） -->
+  <path class="mtp-arrow" d="M304 92 V108 Q304 116 296 116 H184 Q176 116 176 124 V140" marker-end="url(#mtp-arrow)"/>
+  <path class="mtp-arrow" d="M336 92 V108 Q336 116 344 116 H456 Q464 116 464 124 V140" marker-end="url(#mtp-arrow)"/>
+  <path class="mtp-arrow" d="M176 188 V252" marker-end="url(#mtp-arrow)"/>
+  <path class="mtp-arrow" d="M464 188 V252" marker-end="url(#mtp-arrow)"/>
+  <path class="mtp-arrow" d="M176 320 V336 Q176 344 184 344 H296 Q304 344 304 352 V368" marker-end="url(#mtp-arrow)"/>
+  <path class="mtp-arrow" d="M464 320 V336 Q464 344 456 344 H344 Q336 344 336 352 V368" marker-end="url(#mtp-arrow)"/>
+  <path class="mtp-arrow" d="M320 420 V444" marker-end="url(#mtp-arrow)"/>
+  <path class="mtp-arrow" d="M248 484 H184 Q176 484 176 492 V556" marker-end="url(#mtp-arrow)"/>
+  <path class="mtp-arrow" d="M392 484 H456 Q464 484 464 492 V556" marker-end="url(#mtp-arrow)"/>
+
+  <rect class="mtp-mask" x="186" y="466" width="52" height="12" rx="2"/>
+  <text class="mtp-label" x="212" y="476" text-anchor="middle">掉的是 DC</text>
+  <rect class="mtp-mask" x="398" y="466" width="60" height="12" rx="2"/>
+  <text class="mtp-label" x="428" y="476" text-anchor="middle">本节点是 DC</text>
+
+  <!-- Corosync -->
+  <rect class="mtp-end" x="200" y="40" width="240" height="52" rx="20"/>
+  <text class="mtp-name" x="320" y="62" text-anchor="middle">Totem 形成新成员</text>
+  <text class="mtp-mono" x="320" y="80" text-anchor="middle">confchg: TRANSITIONAL → REGULAR</text>
+
+  <rect class="mtp-step" x="64" y="140" width="224" height="48" rx="6"/>
+  <text class="mtp-name" x="176" y="160" text-anchor="middle">quorum 服务</text>
+  <text class="mtp-sub" x="176" y="177" text-anchor="middle">节点在不在、有没有 quorum</text>
+
+  <rect class="mtp-step" x="352" y="140" width="224" height="48" rx="6"/>
+  <text class="mtp-name" x="464" y="160" text-anchor="middle">CPG 进程组</text>
+  <text class="mtp-sub" x="464" y="177" text-anchor="middle">各节点的 Pacemaker 进程在不在组里</text>
+
+  <!-- Pacemaker -->
+  <rect class="mtp-step" x="64" y="252" width="224" height="68" rx="6"/>
+  <text class="mtp-name" x="176" y="274" text-anchor="middle">quorum 通知</text>
+  <text class="mtp-mono" x="176" y="292" text-anchor="middle">quorum_notification_cb</text>
+  <text class="mtp-sub" x="176" y="308" text-anchor="middle">名单里没有的节点标成 lost</text>
+
+  <rect class="mtp-step" x="352" y="252" width="224" height="68" rx="6"/>
+  <text class="mtp-name" x="464" y="274" text-anchor="middle">CPG 通知</text>
+  <text class="mtp-mono" x="464" y="292" text-anchor="middle">pcmk__cpg_confchg_cb</text>
+  <text class="mtp-sub" x="464" y="308" text-anchor="middle">离组节点上的进程标成离线</text>
+
+  <rect class="mtp-focal" x="200" y="368" width="240" height="52" rx="6"/>
+  <text class="mtp-name" x="320" y="390" text-anchor="middle">controld 汇总两路通知</text>
+  <text class="mtp-mono" x="320" y="408" text-anchor="middle">peer_update_callback</text>
+
+  <polygon class="mtp-step" points="320,444 392,484 320,524 248,484"/>
+  <text class="mtp-name" x="320" y="488" text-anchor="middle">看双方角色</text>
+
+  <rect class="mtp-end" x="64" y="556" width="224" height="56" rx="20"/>
+  <text class="mtp-name" x="176" y="580" text-anchor="middle">发起选举，选新 DC</text>
+  <text class="mtp-mono" x="176" y="598" text-anchor="middle">Our peer on the DC (…) is dead</text>
+
+  <rect class="mtp-end" x="352" y="556" width="224" height="72" rx="20"/>
+  <text class="mtp-name" x="464" y="580" text-anchor="middle">中止 transition，重新计算</text>
+  <text class="mtp-mono" x="464" y="598" text-anchor="middle">Stonith/shutdown … was not expected</text>
+  <text class="mtp-sub" x="464" y="614" text-anchor="middle">中止理由写 Node failure</text>
+
+  <!-- 图例 -->
+  <line class="mtp-rule" x1="24" y1="664" x2="616" y2="664"/>
+  <rect class="mtp-end" x="24" y="678" width="24" height="12" rx="6"/>
+  <text class="mtp-label" x="54" y="688">开始 / 结果</text>
+  <rect class="mtp-step" x="130" y="678" width="24" height="12" rx="2"/>
+  <text class="mtp-label" x="160" y="688">处理步骤</text>
+  <polygon class="mtp-step" points="226,684 238,678 250,684 238,690"/>
+  <text class="mtp-label" x="258" y="688">按条件分支</text>
+  <rect class="mtp-focal" x="334" y="678" width="24" height="12" rx="2"/>
+  <text class="mtp-label" x="364" y="688">两路通知在这里汇合</text>
+  <rect class="mtp-zone" x="480" y="678" width="24" height="12" rx="2"/>
+  <text class="mtp-label" x="510" y="688">所属程序和版本</text>
+</svg>
+  </div>
+</main>
+</body>
+</html>

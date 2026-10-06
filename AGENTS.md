@@ -21,11 +21,41 @@
 - 站点不依赖实验平台：一个阶段写完手记就算完成，平台验证是可选的补充。需要时可以参考平台的实现，但只以文字
   摘要写进 `evidence`，平台细节不必公开。
 
+## 画图
+
+以后所有图都用 diagram-design skill 画，不再新写 Mermaid。
+
+- 根目录的 `.diagram-design` 指定 profile `learn-pacemaker-notes`（在本机
+  `~/.diagram-design/profiles/`）。换机器时按下表重建，颜色和 `src/styles/tokens.css` 同源：
+
+  | 角色 | 站点变量 | 用途 |
+  | --- | --- | --- |
+  | paper | `--paper-raised` | 图的底色 |
+  | paper-2 | `--paper-muted` | 分区、状态带 |
+  | ink | `--ink` | 正文、步骤框描边 |
+  | muted | `--ink-muted` | 副标题、箭头 |
+  | soft | `--ink-subtle` | 刻度、分区标签 |
+  | rule | `--line` | 细分隔线 |
+  | accent | `--brand` | 焦点，一张图最多 2 处 |
+  | accent-tint | `--brand-light` | 焦点框填充 |
+
+- 源文件是 `src/diagrams/<name>.html`：一页完整 HTML，里面第一个 `<svg>` 就是图。`npm run assets`
+  把它取出来写成同名 `.svg`，手记里用 `<Diagram name="<name>" />` 引用。
+- SVG 里的颜色一律写站点变量加浅色兜底，例如 `var(--ink, #22201b)`，这样嵌进页面后跟着站点切深浅色。
+  样式写在 SVG 自己的 `<style>` 里，选择器用 `#<id>` 限定，class 和 marker 的 id 都加图名前缀
+  （例如 `nlt-`）——内联 SVG 的样式和 id 在整页是全局的，不加前缀会互相串。
+- `viewBox` 宽 640（正文图框的宽度，桌面上 1:1 显示），根 `<svg>` 加 `style="min-width: 560px"`，
+  手机上横向滚动而不是缩到看不清。
+- 中文说明用正文字体，等宽字体只给函数名、日志原文这类代码。
+- 一张图最多 9 个框，超了就拆成两张。
+- 提交前跑 skill 自带的 `scripts/self_check.py <源文件>`，并在浅色、深色、手机宽度下各看一眼。
+- 现有的 `.mmd` 图下次改动时改画成 `.html`，不单独返工。
+
 ## 收尾
 
 直接在 `main` 上工作，不建分支。改完：
 
-1. 改了 `.mmd` 或 `designs/og-card/og.html` / `src/styles/tokens.css`，先跑 `npm run assets`。
+1. 改了 `src/diagrams/` 下的 `.html` / `.mmd`，或 `designs/og-card/og.html` / `src/styles/tokens.css`，先跑 `npm run assets`。
 2. `make check` 全绿。
 3. 只提交本次任务的文件，push `origin main`，核对本地 `HEAD` 与远端 SHA 一致。
 

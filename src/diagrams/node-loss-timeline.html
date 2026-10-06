@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>节点崩溃到被判定掉线</title>
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400&family=Inter:wght@400;600&display=swap" rel="stylesheet">
+  <style>
+    /* 和 src/styles/tokens.css 同一套令牌；嵌进站点后 SVG 直接用站点的变量。 */
+    :root {
+      --paper-raised: #ffffff; --paper-muted: #f6f3ec; --ink: #22201b; --ink-muted: #6a6459;
+      --ink-subtle: #7a7365; --line: #e7e1d5; --brand: #2f5fd0; --brand-light: #eef2fb;
+      --font-display: Fraunces, "Songti SC", "Noto Serif SC", Georgia, serif;
+      --font-body: Inter, -apple-system, BlinkMacSystemFont, "PingFang SC", "Noto Sans SC", sans-serif;
+      --font-mono: ui-monospace, SFMono-Regular, Consolas, monospace;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --paper-raised: #1f1e17; --paper-muted: #1d1c15; --ink: #f2efe6; --ink-muted: #b3ac9c;
+        --ink-subtle: #8b8474; --line: #34322a; --brand: #8fabf0; --brand-light: #1c2237;
+      }
+    }
+    body { margin: 0; padding: 3rem 1rem; background: var(--paper-raised); color: var(--ink); font-family: var(--font-body); }
+    .frame { max-width: 640px; margin: 0 auto; }
+    .eyebrow { font: 500 0.66rem var(--font-mono); letter-spacing: 0.18em; text-transform: uppercase; color: var(--ink-subtle); margin: 0 0 0.5rem; }
+    h1 { font: 400 1.75rem/1.2 var(--font-display); margin: 0 0 1.5rem; }
+    .canvas { overflow-x: auto; }
+  </style>
+</head>
+<body>
+<main class="frame">
+  <p class="eyebrow">Timeline · 阶段 01</p>
+  <h1>节点崩溃到被判定掉线</h1>
+  <div class="canvas">
+<svg id="nlt" viewBox="0 0 640 336" style="min-width: 560px" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="nlt-title nlt-desc">
+  <title id="nlt-title">两节点默认配置下，节点崩溃到被判定掉线的时间线</title>
+  <desc id="nlt-desc">从最后一次收到 token 开始计时：2250 ms 只打告警日志；3000 ms token 超时，Totem 从 OPERATIONAL 进入 GATHER，每 50 ms 广播 join；再等 3600 ms consensus 到期，没回 join 的节点记为失败，约 6600 ms 判定掉线；随后经过 COMMIT、RECOVERY 几轮消息往返回到 OPERATIONAL。</desc>
+  <defs>
+    <style>
+      #nlt {
+        --nlt-paper: var(--paper-raised, #ffffff);
+        --nlt-paper-2: var(--paper-muted, #f6f3ec);
+        --nlt-ink: var(--ink, #22201b);
+        --nlt-muted: var(--ink-muted, #6a6459);
+        --nlt-soft: var(--ink-subtle, #7a7365);
+        --nlt-rule: var(--line, #e7e1d5);
+        --nlt-accent: var(--brand, #2f5fd0);
+        --nlt-sans: var(--font-body, "Inter Variable", Inter, -apple-system, "PingFang SC", "Noto Sans SC", sans-serif);
+        --nlt-mono: var(--font-mono, ui-monospace, SFMono-Regular, Consolas, monospace);
+      }
+      #nlt .nlt-bg { fill: var(--nlt-paper); }
+      #nlt .nlt-name { font: 600 12px var(--nlt-sans); fill: var(--nlt-ink); }
+      #nlt .nlt-sub { font: 400 11px var(--nlt-sans); fill: var(--nlt-muted); }
+      #nlt .nlt-note { font: 400 10px var(--nlt-sans); fill: var(--nlt-muted); }
+      #nlt .nlt-mono { font: 400 9px var(--nlt-mono); fill: var(--nlt-muted); }
+      #nlt .nlt-state { font: 500 10px var(--nlt-mono); fill: var(--nlt-ink); letter-spacing: 0.04em; }
+      #nlt .nlt-tick { font: 400 9px var(--nlt-mono); fill: var(--nlt-soft); }
+      #nlt .nlt-total { font: 600 11px var(--nlt-sans); fill: var(--nlt-accent); }
+      #nlt .nlt-flag { stroke: var(--nlt-soft); stroke-width: 1; }
+      #nlt .nlt-axis { stroke: color-mix(in srgb, var(--nlt-ink) 30%, transparent); stroke-width: 1; }
+      #nlt .nlt-band { fill: var(--nlt-paper-2); stroke: var(--nlt-rule); stroke-width: 1; }
+      #nlt .nlt-band-sketch { fill: none; stroke: var(--nlt-soft); stroke-width: 1; stroke-dasharray: 3 2; }
+      #nlt .nlt-dot { fill: var(--nlt-ink); }
+      #nlt .nlt-dot-log { fill: var(--nlt-paper); stroke: var(--nlt-ink); stroke-width: 1.2; }
+      #nlt .nlt-dot-focal { fill: var(--nlt-accent); }
+      #nlt .nlt-bracket { fill: none; stroke: var(--nlt-muted); stroke-width: 1; }
+      #nlt .nlt-bracket-focal { fill: none; stroke: var(--nlt-accent); stroke-width: 1.2; }
+      #nlt .nlt-rule { stroke: var(--nlt-rule); stroke-width: 0.8; }
+    </style>
+  </defs>
+
+  <rect class="nlt-bg" width="640" height="336"/>
+
+  <!-- 时间轴：x = 32 + 0.07 × 毫秒，每秒 70px，事件位置按比例 -->
+  <line class="nlt-axis" x1="32" y1="152" x2="608" y2="152"/>
+  <g class="nlt-axis">
+    <line x1="32" y1="152" x2="32" y2="156"/>
+    <line x1="102" y1="152" x2="102" y2="156"/>
+    <line x1="172" y1="152" x2="172" y2="156"/>
+    <line x1="242" y1="152" x2="242" y2="156"/>
+    <line x1="312" y1="152" x2="312" y2="156"/>
+    <line x1="382" y1="152" x2="382" y2="156"/>
+    <line x1="452" y1="152" x2="452" y2="156"/>
+    <line x1="522" y1="152" x2="522" y2="156"/>
+    <line x1="592" y1="152" x2="592" y2="156"/>
+  </g>
+  <g class="nlt-tick" text-anchor="middle">
+    <text x="32" y="168">0</text>
+    <text x="102" y="168">1 s</text>
+    <text x="172" y="168">2 s</text>
+    <text x="242" y="168">3 s</text>
+    <text x="312" y="168">4 s</text>
+    <text x="382" y="168">5 s</text>
+    <text x="452" y="168">6 s</text>
+    <text x="522" y="168">7 s</text>
+    <text x="592" y="168">8 s</text>
+  </g>
+
+  <!-- 事件旗杆（先画线，再画点和文字） -->
+  <line class="nlt-flag" x1="32" y1="32" x2="32" y2="148"/>
+  <line class="nlt-flag" x1="189.5" y1="32" x2="189.5" y2="148"/>
+  <line class="nlt-flag" x1="242" y1="88" x2="242" y2="148"/>
+  <line class="nlt-flag" x1="494" y1="32" x2="494" y2="146"/>
+
+  <circle class="nlt-dot" cx="32" cy="152" r="4"/>
+  <circle class="nlt-dot-log" cx="189.5" cy="152" r="4"/>
+  <circle class="nlt-dot" cx="242" cy="152" r="4"/>
+  <circle class="nlt-dot-focal" cx="494" cy="152" r="6"/>
+
+  <text class="nlt-name" x="40" y="44">0 ms · 节点崩溃</text>
+  <text class="nlt-sub" x="40" y="62">最后一次收到 token</text>
+
+  <text class="nlt-name" x="197.5" y="44">2250 ms · 告警</text>
+  <text class="nlt-mono" x="197.5" y="60">Token has not been received</text>
+
+  <text class="nlt-name" x="250" y="100">3000 ms · token 超时，进入 GATHER</text>
+  <text class="nlt-mono" x="250" y="116">A processor failed,</text>
+  <text class="nlt-mono" x="250" y="128">forming new configuration</text>
+
+  <text class="nlt-name" x="486" y="44" text-anchor="end">6600 ms · 判定掉线</text>
+  <text class="nlt-sub" x="486" y="62" text-anchor="end">没回 join 的节点记为失败</text>
+
+  <!-- Totem 成员状态 -->
+  <rect class="nlt-band" x="32" y="184" width="210" height="32" rx="4"/>
+  <text x="44" y="204"><tspan class="nlt-state">OPERATIONAL</tspan><tspan class="nlt-note" dx="8">正常传 token</tspan></text>
+
+  <rect class="nlt-band" x="242" y="184" width="252" height="32" rx="4"/>
+  <text x="254" y="204"><tspan class="nlt-state">GATHER</tspan><tspan class="nlt-note" dx="8">每 50 ms 广播 join，等确认</tspan></text>
+
+  <rect class="nlt-band-sketch" x="494" y="184" width="12" height="32"/>
+  <rect class="nlt-band" x="506" y="184" width="102" height="32" rx="4"/>
+  <text class="nlt-state" x="514" y="204">OPERATIONAL</text>
+
+  <!-- 时长括号 -->
+  <path class="nlt-bracket" d="M32 240 V248 H240 V240"/>
+  <text class="nlt-note" x="136" y="234" text-anchor="middle">token 超时 3000 ms</text>
+
+  <path class="nlt-bracket" d="M244 240 V248 H494 V240"/>
+  <text class="nlt-note" x="369" y="234" text-anchor="middle">consensus 3600 ms，重进 GATHER 会重启计时</text>
+
+  <path class="nlt-bracket-focal" d="M32 268 V276 H494 V268"/>
+  <text class="nlt-total" x="263" y="264" text-anchor="middle">合计约 6600 ms：从崩溃到判定掉线</text>
+
+  <text class="nlt-mono" x="512" y="234">COMMIT →</text>
+  <text class="nlt-mono" x="512" y="246">RECOVERY</text>
+  <text class="nlt-note" x="512" y="260">几轮消息往返</text>
+
+  <!-- 图例 -->
+  <line class="nlt-rule" x1="32" y1="296" x2="608" y2="296"/>
+  <circle class="nlt-dot" cx="36" cy="316" r="4"/>
+  <text class="nlt-note" x="46" y="320">事件</text>
+  <circle class="nlt-dot-log" cx="92" cy="316" r="4"/>
+  <text class="nlt-note" x="102" y="320">只打日志，成员不变</text>
+  <circle class="nlt-dot-focal" cx="214" cy="316" r="5"/>
+  <text class="nlt-note" x="224" y="320">判定掉线</text>
+  <rect class="nlt-band" x="284" y="310" width="20" height="12" rx="2"/>
+  <text class="nlt-note" x="310" y="320">Totem 成员状态</text>
+  <rect class="nlt-band-sketch" x="406" y="310" width="20" height="12"/>
+  <text class="nlt-note" x="432" y="320">宽度只是示意，不按比例</text>
+</svg>
+  </div>
+</main>
+</body>
+</html>

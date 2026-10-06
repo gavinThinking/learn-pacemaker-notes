@@ -32,7 +32,7 @@
 | `src/content/notes/` | 手记（Markdown / MDX），字段见 `src/content.config.ts` |
 | `src/data/sketches.ts` | 图解：每张图的标题、要点、所属层和阶段、已知问题 |
 | `src/assets/sketches/` | 图解的 WebP，文件名就是 slug；缩略图由构建生成 |
-| `src/diagrams/` | 架构图：`.mmd` 是源，`.svg` 由 `npm run assets` 生成 |
+| `src/diagrams/` | 架构图：`.html`（diagram-design）或 `.mmd` 是源，`.svg` 由 `npm run assets` 生成 |
 | `designs/og-card/og.html` | 分享卡片的源 |
 
 ## 加一张图解

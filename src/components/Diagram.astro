@@ -1,8 +1,8 @@
 ---
 /**
- * 架构图。源码是 `src/diagrams/*.mmd`，由 `npm run assets` 渲染成同名 .svg 入库，
- * 这里在构建期内联——运行时零 JS。改了 .mmd 忘记重新生成，`make check` 会因为
- * 源码哈希对不上而红。
+ * 架构图。源码是 `src/diagrams/*.html`（diagram-design 画的）或旧的 `*.mmd`，
+ * 由 `npm run assets` 生成同名 .svg 入库，这里在构建期内联——运行时零 JS。
+ * 改了源码忘记重新生成，`make check` 会因为源码哈希对不上而红。
  *
  * `verified` 是证据等级，必须显式给，不给默认当最低级：guess → docs → source。
  * `gaps` 是这张图已知没画或没核对的东西，和图一起展示。
@@ -31,7 +31,7 @@ const svgs = import.meta.glob<string>("../diagrams/*.svg", {
 const svg = svgs[`../diagrams/${name}.svg`];
 if (!svg) {
   throw new Error(
-    `找不到架构图 "${name}.svg"。改过 .mmd 的话先跑 npm run assets。`,
+    `找不到架构图 "${name}.svg"。改过图的源码的话先跑 npm run assets。`,
   );
 }
 

@@ -75,14 +75,14 @@ Corosync 有两层心跳。下层是 knet（Corosync 3 用的网络传输库）�
 ## 一个节点突然崩溃，接下来发生什么
 
 <Diagram
-  name="membership-change"
-  caption="两节点、默认配置下，一个节点崩溃后的成员变化路径。时间从最后一次收到 token 算起。"
+  name="node-loss-timeline"
+  caption="两节点、默认配置下，一个节点崩溃后多久被判定掉线。时间从最后一次收到 token 算起，事件位置按比例。"
   verified="source"
   rev="1"
   gaps={[
     "图里的时间是读源码推出来的，没有在真实集群上测过",
+    "consensus 到期后要再进一次 GATHER，图里没画这一小段",
     "没画网络分区（两边都活着但互相看不见）时两边各自形成成员的情况",
-    "Corosync 内部 sync 阶段（各服务同步状态）只画成一个框",
   ]}
 />
 
@@ -129,6 +129,17 @@ Totem 的成员状态机只有四个状态（[`totemsrp.c` 第 278–281 行](ht
 </div>
 
 两者分开是有道理的：节点还在 Corosync 成员里，不代表上面的 Pacemaker 进程还活着。
+
+<Diagram
+  name="membership-to-pacemaker"
+  caption="新成员形成后，变化分两路传进 Pacemaker，在 controld 汇合后按 DC 角色分别处理。"
+  verified="source"
+  rev="1"
+  gaps={[
+    "没画 quorum 得失那条路（crm_update_quorum 把 have-quorum 写进 CIB）",
+    "掉的节点不是 DC、本节点也不是 DC 的情况，图里没画",
+  ]}
+/>
 
 **quorum 通知。** Pacemaker 用 `quorum_trackstart(… CS_TRACK_CHANGES | CS_TRACK_CURRENT)` 订阅（[`corosync.c` 第 430 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/cluster/corosync.c#L430)）。回调 `quorum_notification_cb`（[第 267–334 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/cluster/corosync.c#L267-L334)）打出 `Quorum acquired` 或 `Quorum lost`，把这次名单里的节点都标成 member，然后调用 `pcmk__reap_unseen_nodes`（[`membership.c` 第 1311–1335 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/cluster/membership.c#L1311-L1335)）：这次名单里没出现的节点一律标成 lost。quorum 怎么算是下一篇的内容。
 
