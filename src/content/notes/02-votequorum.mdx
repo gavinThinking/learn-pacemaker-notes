@@ -1,0 +1,225 @@
+---
+title: 剩下的节点有没有资格做决定：votequorum 和两节点特例
+date: 2026-10-06
+summary: votequorum 按票数过半判定 quorum，Pacemaker 没有 quorum 就停资源、也不去 fencing 不在线的节点。两节点集群掉一个就不过半，所以要 two_node 把门槛降到 1；代价是网络分区时两边都有 quorum，要靠 fencing 分胜负，再用 wait_for_all 防止刚开机的孤立节点抢先动手。
+layer: L1
+stage: "02"
+upstream:
+  - label: votequorum(5)（Corosync v3.1.10）
+    href: https://github.com/corosync/corosync/blob/v3.1.10/man/votequorum.5
+  - label: exec/votequorum.c：门槛怎么算
+    href: https://github.com/corosync/corosync/blob/v3.1.10/exec/votequorum.c#L906-L977
+  - label: exec/votequorum.c：判定有没有 quorum
+    href: https://github.com/corosync/corosync/blob/v3.1.10/exec/votequorum.c#L995-L1074
+  - label: exec/votequorum.c：读配置、特例之间的互斥
+    href: https://github.com/corosync/corosync/blob/v3.1.10/exec/votequorum.c#L1243-L1564
+  - label: lib/pengine/utils.c：没有 quorum 时能不能 fencing
+    href: https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pengine/utils.c#L36-L114
+links:
+  - to: "01"
+    why: votequorum 只数成员名单里的票；名单什么时候变、多久才变，是上一篇的内容。
+  - to: "12"
+    why: two_node 下网络分区时两边都有 quorum，谁活下来靠互相 fencing 的先后；反过来，没有 quorum 的一侧不能 fencing 已经不在线的节点。
+  - to: "13"
+    why: 这篇只交出「有没有 quorum」；没有 quorum 时停资源、冻结还是降级，由 no-quorum-policy 决定。
+  - to: "03"
+    why: DC 把 quorum 结果写进 CIB 根元素的 have-quorum 属性，调度器从那里读，不直接问 Corosync。
+  - to: "14"
+    why: 两节点 PostgreSQL 是最常见的部署，主库断电后备库能不能被提升，第一道关就是这一侧还有没有 quorum。
+---
+
+上一篇讲到，节点崩溃大约 6.6 秒后，Corosync 交出一份新的成员名单。名单只说明谁还在，不说明剩下的人能不能做决定。网络断成两半时，两边各自形成一份名单，各自都觉得对方死了；如果两边都去接管资源，同一个数据库就会在两处同时被写——这就是脑裂。quorum（法定人数）就是防这件事的：只有占多数的一边有资格做决定。
+
+本篇的版本同上一篇：Corosync v3.1.10，Pacemaker 2.1.11。源码结论附链接，只依据手册的会单独说明。
+
+## 一句话
+
+votequorum 给每个节点 1 票，实到票数过半才有 quorum；Pacemaker 没有 quorum 时默认停掉资源，也不会去 fencing（强制关掉）已经不在线的节点。两节点集群掉一个就只剩一半，不过半，于是什么都做不了。`two_node: 1` 把门槛人为降到 1 票，让剩下的节点能接管；代价是网络分区时两边都有 quorum，只能靠互相 fencing 的先后分胜负。它同时默认打开 `wait_for_all`：开机后没见过全员到齐，就不给 quorum，防止一台孤立开机的节点抢先 fencing 掉健康的另一台。
+
+## 票数怎么算
+
+几个词先说清楚：
+
+- **期望票数**（expected votes）：集群「应该」有多少票。有 nodelist 时是各节点 `quorum_votes` 的和（不写默认 1），代码在 [`votequorum.c` 第 1146–1208 行](https://github.com/corosync/corosync/blob/v3.1.10/exec/votequorum.c#L1146-L1208)；`quorum.expected_votes` 显式写了就以它为准（[第 1522–1532 行](https://github.com/corosync/corosync/blob/v3.1.10/exec/votequorum.c#L1522-L1532)）。
+- **实到票数**（total votes）：当前成员名单里各节点的票数之和，加上仲裁设备（qdevice，见后文）的票。
+- **门槛**（quorum）：实到票数不低于它，这一侧就有 quorum。
+
+门槛由 `calculate_quorum` 算出（[第 906–977 行](https://github.com/corosync/corosync/blob/v3.1.10/exec/votequorum.c#L906-L977)）。核心是两行整数除法（[第 948–950 行](https://github.com/corosync/corosync/blob/v3.1.10/exec/votequorum.c#L948-L950)），源码注释说这个算法取自 OpenVMS 集群手册：
+
+```c
+q1 = (highest_expected + 2) / 2;
+q2 = (total_votes + 2) / 2;
+newquorum = max(q1, q2);
+```
+
+`(N + 2) / 2` 取整，就是「严格超过一半」的最小整数。每个节点 1 票时：
+
+<div class="table-scroll">
+
+| 节点数 | 期望票数 | 门槛 | 最多同时掉几个还有 quorum |
+| --- | --- | --- | --- |
+| 2 | 2 | 2 | 0 |
+| 3 | 3 | 2 | 1 |
+| 4 | 4 | 3 | 1 |
+| 5 | 5 | 3 | 2 |
+
+</div>
+
+四节点和三节点一样只能掉一个，这是偶数节点的老问题：多出来的那台不增加容错，只增加「正好对半分」的可能。
+
+还有两条规则让门槛只升不降：
+
+- **期望票数只往高处走。** 实到票数超过期望票数时（比如加了节点却没改配置），期望票数直接抬到实到票数（[第 1124–1127 行](https://github.com/corosync/corosync/blob/v3.1.10/exec/votequorum.c#L1124-L1127)）。
+- **门槛不会因为节点掉了而下降。** 正常重算时 `allow_decrease` 为 0，新门槛取新旧两者的较大值（[第 956–958 行](https://github.com/corosync/corosync/blob/v3.1.10/exec/votequorum.c#L956-L958)）。五节点集群掉了两台，门槛还是 3，不会按剩下的 3 台重新算成 2。否则节点一台台掉下去，最后一台也会「过半」，quorum 就失去意义了。后面的 last_man_standing 是唯一主动放松这条的特例。
+
+## 有没有 quorum，对 Pacemaker 意味着什么
+
+<Diagram
+  name="votequorum-decision"
+  caption="成员变化后，votequorum 先算门槛，再依次过三道判断。图里只画了本篇讲的特例。"
+  verified="source"
+  rev="1"
+  gaps={[
+    "没画仲裁设备的 master_wins：没 quorum 时，仲裁设备认定的一侧也给 quorum",
+    "没画 last_man_standing 定时器到期后的重算",
+  ]}
+/>
+
+判定由 `are_we_quorate` 做（[第 995–1074 行](https://github.com/corosync/corosync/blob/v3.1.10/exec/votequorum.c#L995-L1074)）。结果变了就通知所有订阅者，Corosync 自己打一条日志：得到 quorum 是 `This node is within the primary component and will provide service.`，失去是 `… non-primary component and will NOT provide any services.`（[`vsf_quorum.c` 第 179–183 行](https://github.com/corosync/corosync/blob/v3.1.10/exec/vsf_quorum.c#L179-L183)）。
+
+Pacemaker 这边的接收函数上一篇见过：`quorum_notification_cb` 打出 `Quorum acquired`、`Quorum lost`，或者在没变化时打 info 级的 `Quorum retained`（[`corosync.c` 第 276–291 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/cluster/corosync.c#L276-L291)）。之后结果分两路：
+
+1. **写进 CIB。** DC 上的 `crm_update_quorum` 把结果写成 CIB 根元素的 `have-quorum` 属性（[`controld_membership.c` 第 424–435 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/daemons/controld/controld_membership.c#L424-L435)），每次调用调度器时也随输入一起带过去（[`controld_schedulerd.c` 第 486–488 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/daemons/controld/controld_schedulerd.c#L486-L488)）。
+2. **调度器照它做决定。** 调度器读到 `have-quorum` 为假时（[`status.c` 第 129–133 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pengine/status.c#L129-L133)），有两处行为会变：
+
+<div class="table-scroll">
+
+| 影响 | 有 quorum | 没有 quorum（`no-quorum-policy` 取默认值 `stop`） | 源码 |
+| --- | --- | --- | --- |
+| 资源 | 照常调度 | 按 no-quorum-policy 处理，默认停掉这一侧的资源 | [`pe_actions.c` 第 290–313 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pengine/pe_actions.c#L290-L313) |
+| fencing 不在线的节点 | 可以 | 不可以，日志 `Unclean nodes will not be fenced until quorum is attained or no-quorum-policy is set to ignore` | [`utils.c` 第 60–113 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pengine/utils.c#L60-L113)、[`pcmk_scheduler.c` 第 612–616 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pacemaker/pcmk_scheduler.c#L612-L616) |
+
+</div>
+
+第二行是理解两节点问题的关键。`pe_can_fence` 判断能不能 fencing 某个节点时，有 quorum 直接放行；没有 quorum 且策略不是 `ignore` 时，只有**还在线**的节点能被 fencing。道理是：少数派一侧不知道多数派那边发生了什么，它去 fencing 别人，很可能是在杀正在正常提供服务的那一边。no-quorum-policy 的其他取值留给第 13 讲。
+
+## 两节点的死结
+
+把上面两件事放到两节点集群上：期望 2 票，门槛 2。一台断电后，活着的那台实到 1 票，不够门槛，失去 quorum。于是：
+
+- 它停掉自己这边的资源（默认策略）；
+- 它不能 fencing 断电的那台，因为没有 quorum；
+- 它也不能接管断电那台的资源——那台状态未知，没 fencing 之前不能在别处启动同一份资源（第 12 讲）。
+
+结果是一台断电，整个集群停摆。两节点集群如果按普通算法跑，高可用就落空了。
+
+## two_node：把门槛降到 1
+
+`calculate_quorum` 的最后一步是专门为两节点写的（[第 960–969 行](https://github.com/corosync/corosync/blob/v3.1.10/exec/votequorum.c#L960-L969)）：
+
+```c
+if (two_node && total_nodes <= 2) {
+    newquorum = 1;
+}
+```
+
+源码注释的说法是：两节点模式让每一台在对方失效时都保有 quorum，脑裂时两台会互相 fencing，只有一台能活过去；成员超过两个时不再走这条，门槛恢复正常算法。`total_nodes` 数的是当前在成员里的节点，所以第三台节点一加入，特例自动失效，和手册「超过两个节点加入时自动关闭 two_node」的说法一致。
+
+门槛变成 1 之后，三种情况的结果：
+
+<div class="table-scroll">
+
+| 情况 | 不开特例 | 开 `two_node: 1` |
+| --- | --- | --- |
+| 一台断电 | 活着的一台失去 quorum，停资源，不 fencing，不接管 | 活着的一台保有 quorum，fencing 断电那台后接管 |
+| 网络断开，两台都活着 | 两台都失去 quorum，都停 | 两台都有 quorum，互相 fencing，先动手的一台活下来 |
+| 停电后只开机了一台 | 没有 quorum | 见下一节：wait_for_all 让它等另一台出现 |
+
+</div>
+
+第二行就是 two_node 的代价：quorum 不再能防脑裂，防脑裂的担子全部压到 fencing 上。两台同时发出 fencing，如果 fence 设备允许两边同时得手，就会两台一起被关掉。所以两节点集群通常给一边的 fence 设备配延迟，让固定的一方先动手——怎么配在第 12 讲。
+
+two_node 有一个硬限制：它和仲裁设备不能同时配置，启动时直接报 `two_node and quorum device cannot be configured at the same time!` 并拒绝启动（[第 1294–1302 行](https://github.com/corosync/corosync/blob/v3.1.10/exec/votequorum.c#L1294-L1302)）。
+
+## wait_for_all：开机后先等全员到齐
+
+只开 two_node 还有一个陷阱。设想网络断开、A 先 fencing 掉了 B。B 重启后网络还没修好，B 独自开机：门槛是 1，B 自己就有 quorum，看见 A 不在名单里、状态未知，于是去 fencing A。A 重启后又把 B 杀掉……两台轮流互杀，这在社区里叫 fence loop。
+
+wait_for_all 切断这个循环。开了它，节点启动时处于「等待全员」状态（[第 1548–1552 行](https://github.com/corosync/corosync/blob/v3.1.10/exec/votequorum.c#L1548-L1552)），`are_we_quorate` 的第一道判断（[第 1004–1016 行](https://github.com/corosync/corosync/blob/v3.1.10/exec/votequorum.c#L1004-L1016)）是：
+
+- 实到票数不等于期望票数，就打出 `Waiting for all cluster members. Current votes: 1 expected_votes: 2`，不给 quorum，直接返回；
+- 全员到齐一次之后清掉等待状态，以后掉节点按正常规则算。
+
+还有一种情况会清掉等待状态：自己加入的集群里已经有一台节点有 quorum、且那台不在等待中（[第 2176–2180 行](https://github.com/corosync/corosync/blob/v3.1.10/exec/votequorum.c#L2176-L2180)）。也就是说 B 重启后只要能和还在运行的 A 连上，就直接并进去，不用等。
+
+两条配置之间的关系在 `votequorum_readconfig` 里：没有显式写 `wait_for_all` 时，它跟着 `two_node` 走（[第 1368–1370 行](https://github.com/corosync/corosync/blob/v3.1.10/exec/votequorum.c#L1368-L1370)）。所以配了 `two_node: 1` 就等于同时配了 `wait_for_all: 1`，除非显式写 `wait_for_all: 0`。
+
+代价也很直接：机房整体停电后，只修好一台时，这一台起不来服务，要么等另一台，要么人工确认另一台确实没在运行后临时放开。
+
+## auto_tie_breaker：对半分时按节点 ID 定输赢
+
+two_node 只管两节点。四节点、六节点集群断成两半时，两边都是一半票数，普通算法下两边都没有 quorum，全停。auto_tie_breaker（ATB）给「正好对半分」加了一个确定的裁决：默认含有最小 nodeid 节点的那一半有 quorum（`auto_tie_breaker_node` 可改成最大 nodeid 或一个有序列表）。
+
+`are_we_quorate` 里 ATB 生效要同时满足三个条件（[第 1026–1032 行](https://github.com/corosync/corosync/blob/v3.1.10/exec/votequorum.c#L1026-L1032)）：
+
+1. 实到票数正好是期望票数的一半（整数除法）；
+2. 上一次成员里不在这一侧的节点数小于门槛，也就是「另一侧不可能凑够票」；
+3. 决胜节点在这一侧（`check_auto_tie_breaker`，[第 638–692 行](https://github.com/corosync/corosync/blob/v3.1.10/exec/votequorum.c#L638-L692)）。
+
+第 2 条防止误用：五节点集群断成 2 + 3 时，2 那一侧满足「5 / 2 = 2」，但另一侧有 3 台、自己就能过半，条件 2 不成立，ATB 不会让两边都有 quorum。
+
+ATB 和两节点特例的区别在于**谁说了算**：
+
+- two_node 让两边都有 quorum，靠 fencing 竞速决胜；
+- ATB 事先定死了胜方，不需要竞速。
+
+两者不能同时开：同时配置时 Corosync 打一条 crit 日志 `two_node and auto_tie_breaker are both specified but are not compatible.`，然后**关掉 two_node**（[第 1372–1379 行](https://github.com/corosync/corosync/blob/v3.1.10/exec/votequorum.c#L1372-L1379)）。
+
+只开 ATB 的两节点集群会怎样？按上面三个条件推：nodeid 小的一台（比如 1 号）掉了，2 号实到 1 票、正好一半，但决胜节点 1 号不在这一侧，没有 quorum；2 号掉了，1 号照常保有 quorum。也就是说 **1 号断电时整个集群停摆**，换来的是网络分区时不用竞速。这是读源码推出来的结论，没在集群上验证。
+
+奇数节点开 ATB 还有一条硬性要求：必须同时开 wait_for_all，否则 ATB 被关掉（[第 1385–1405 行](https://github.com/corosync/corosync/blob/v3.1.10/exec/votequorum.c#L1385-L1405)）。源码注释给的理由：防止重启后不含决胜节点的「一半加一」先凑够票。
+
+## 另外两个特例，只简述
+
+**last_man_standing（LMS）。** 节点掉了之后，等一个窗口期（默认 10 秒，[第 89 行](https://github.com/corosync/corosync/blob/v3.1.10/exec/votequorum.c#L89)），窗口内没再变化就按当前成员重新算期望票数和门槛（定时器回调在 [第 2352–2362 行](https://github.com/corosync/corosync/blob/v3.1.10/exec/votequorum.c#L2352-L2362)，用 `recalculate_quorum(1, 1)` 放开「门槛只升不降」）。手册的例子：八节点集群可以一批批掉到只剩两台还有 quorum；要再降到一台，得同时开 ATB。LMS 只支持每节点 1 票，有节点票数大于 1 时自动关闭（[第 2157–2160 行](https://github.com/corosync/corosync/blob/v3.1.10/exec/votequorum.c#L2157-L2160)）。手册要求高可用集群用 LMS 时必须开 wait_for_all。
+
+**仲裁设备（qdevice）。** 在集群之外放一台第三方仲裁机，作为额外的一票（由独立的 corosync-qdevice 程序实现）。它和 two_node、LMS、ATB 都不兼容（[第 1299–1302 行](https://github.com/corosync/corosync/blob/v3.1.10/exec/votequorum.c#L1299-L1302)、[第 1409–1442 行](https://github.com/corosync/corosync/blob/v3.1.10/exec/votequorum.c#L1409-L1442)）。仲裁设备怎么投票本篇没有读源码，以后需要再单独写。
+
+## 回到主线：主库所在节点断电
+
+两节点 PostgreSQL 集群，主库所在的节点断电。备库所在的节点在 6.6 秒后形成只有自己的成员名单，接着重新计票：
+
+<div class="table-scroll">
+
+| 配置 | 门槛 | 实到 | 结果 | 接下来 |
+| --- | --- | --- | --- | --- |
+| 不开特例 | 2 | 1 | 失去 quorum，日志 `Quorum lost` | 停资源，不 fencing，备库不会被提升 |
+| `two_node: 1` | 1 | 1 | 保有 quorum，日志 `Quorum retained` | 进入 fencing，确认断电节点确实停了再接管 |
+
+</div>
+
+所以两节点集群想要自动切换，`two_node: 1` 是前提。这一步之后的 fencing 和 promote，分别在第 12 讲和第 14 讲。
+
+## 读状态时看哪里
+
+`corosync-quorumtool -s` 打印的 `Votequorum information` 一段，字段直接对应本篇的几个量（[`corosync-quorumtool.c` 第 622–637 行](https://github.com/corosync/corosync/blob/v3.1.10/tools/corosync-quorumtool.c#L622-L637)）：
+
+<div class="table-scroll">
+
+| 字段 | 含义 |
+| --- | --- |
+| `Expected votes` | 期望票数 |
+| `Total votes` | 实到票数 |
+| `Quorum` | 门槛；没 quorum 时后面跟 `Activity blocked` |
+| `Flags` | 开着的特例和当前状态：`2Node`、`Quorate`、`WaitForAll`、`LastManStanding`、`AutoTieBreaker`、`AllowDownscale`、`Qdevice` |
+
+</div>
+
+两节点集群正常运行时 Flags 应该是 `2Node Quorate WaitForAll`。看到 `WaitForAll` 却没有 `Quorate`，说明这台开机后还没见过另一台。
+
+## 还没核对的
+
+- two_node 下两台同时 fencing 的结果取决于 fence 设备，本篇没有涉及，放到第 12 讲。
+- 只开 ATB 时两节点集群的行为、以及 ATB 在节点刚开机时能不能生效，都是按源码推的，没有在集群上验证。
+- 仲裁设备、allow_downscale（手册注明「未完成、不受支持」）、expected_votes_tracking 没有展开。
+- 运行中改 `two_node` 或 `expected_votes` 的行为（手册说这两项可以在运行时修改）没有读对应的重载路径。

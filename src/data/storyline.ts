@@ -20,7 +20,7 @@ export const storyline: Step[] = [
   },
   {
     stages: ["02", "13"],
-    what: "只剩一个节点：two_node 特例决定这一侧还算不算有 quorum；没有 quorum 就按 no-quorum-policy 停手。",
+    what: "只剩一个节点、1 票：配了 two_node 门槛降到 1，这一侧保有 quorum（日志 Quorum retained），往下走 fencing；没配就失去 quorum，按 no-quorum-policy（默认 stop）停资源，也不去 fencing 断电的那台。",
   },
   {
     stages: ["09"],

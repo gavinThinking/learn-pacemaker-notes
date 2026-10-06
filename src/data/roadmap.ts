@@ -40,6 +40,7 @@ export const layers: Layer[] = [
         no: "02",
         title: "votequorum 与 two_node / auto_tie_breaker 等特例",
         summary: "quorum 的票数算法，以及偶数节点、两节点时为什么要特例。",
+        note: "02-votequorum",
       },
     ],
   },
