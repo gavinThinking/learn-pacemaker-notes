@@ -1,11 +1,11 @@
 /**
  * 学习路线：6 层 14 个阶段，顺序是「这一层要成立，必须先懂哪一层」。
  *
- * 每个阶段两栏状态，都是产出物，不评价掌握程度：
- * - note：已发布手记的 slug，写了才填；
- * - evidence：实验平台上对应的验证，用文字写，不放链接（平台仓库私有）。
+ * 状态只看产出物，不评价掌握程度：
+ * - note：已发布手记的 slug，写了才填，填了这个阶段就算完成；
+ * - evidence：实验平台上对应的验证，可选，用文字写，不放链接（平台仓库私有）。
  */
-export type StageStatus = "todo" | "partial" | "done";
+export type StageStatus = "todo" | "done";
 
 export interface Stage {
   no: string;
@@ -148,13 +148,10 @@ export const layers: Layer[] = [
 
 export const statusLabels: Record<StageStatus, string> = {
   todo: "未开始",
-  partial: "进行中",
   done: "手记已发",
 };
 
-/** 状态只看产出：手记发了且有平台证据算 done，只有其中一样算 partial。 */
-export const statusOf = (s: Stage): StageStatus =>
-  s.note && s.evidence ? "done" : s.note || s.evidence ? "partial" : "todo";
+export const statusOf = (s: Stage): StageStatus => (s.note ? "done" : "todo");
 
 const all = layers.flatMap((l) => l.stages);
 

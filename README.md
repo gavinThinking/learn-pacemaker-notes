@@ -8,8 +8,11 @@
 
 ## 和实验平台的关系
 
-验证用的多节点集群在另一个私有仓库。本站**只放从平台导出的文字摘要**，不链接、不点名平台仓库，
-也不出现平台内部的资源名；`scripts/check-boundary.mjs` 在 `make check` 里拦这些词。
+两边互不依赖：一个阶段写完手记就算完成，不等平台。验证用的多节点集群在另一个私有仓库，需要时手记可以
+参考它的实现，但**只放文字摘要**，不链接、不点名平台仓库，也不出现平台内部的资源名；
+`scripts/check-boundary.mjs` 在 `make check` 里拦这些词。
+
+手记正文由 AI 撰写，作者跟读学习；每条源码结论链到 2.1.11 tag，读者可以自己核对。
 
 ## 常用命令
 
@@ -25,7 +28,7 @@
 | 路径 | 内容 |
 |---|---|
 | `src/data/site.ts` | 站名、上游版本、导航 |
-| `src/data/roadmap.ts` | 6 层 14 个阶段，每个阶段的手记和平台证据 |
+| `src/data/roadmap.ts` | 6 层 14 个阶段，每个阶段的手记和可选的平台验证 |
 | `src/content/notes/` | 手记（Markdown / MDX），字段见 `src/content.config.ts` |
 | `src/diagrams/` | 架构图：`.mmd` 是源，`.svg` 由 `npm run assets` 生成 |
 | `designs/og-card/og.html` | 分享卡片的源 |

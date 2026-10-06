@@ -530,10 +530,6 @@ a.card:hover {
   background: var(--brand);
 }
 
-.progress-bar__cell[data-status="partial"] {
-  background: var(--amber);
-}
-
 .part {
   padding-block: 2.6rem;
   border-top: 1px solid var(--line-soft);
@@ -637,11 +633,6 @@ a.card:hover {
   color: var(--brand);
   background: var(--brand-light);
   border-color: var(--brand-soft);
-}
-
-.pill[data-status="partial"] {
-  color: var(--amber);
-  background: var(--amber-light);
 }
 
 .pill[data-status="todo"] {
