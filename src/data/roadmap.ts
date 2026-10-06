@@ -61,6 +61,7 @@ export const layers: Layer[] = [
         title: "节点属性与 attrd",
         summary: "临时属性和永久属性的区别，资源代理怎么用属性影响调度。",
         upstream: "daemons/attrd",
+        note: "04-attrd",
       },
     ],
   },

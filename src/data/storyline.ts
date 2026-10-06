@@ -40,7 +40,7 @@ export const storyline: Step[] = [
   },
   {
     stages: ["04", "10"],
-    what: "controld 按 transition 通过 OCF 协议调用资源代理；谁该当主，看资源代理写进节点属性的 promotion score。",
+    what: "谁该当主，调度器看的是各节点的 promotion score：备库上的资源代理平时在 monitor 里经 attrd 把它写进 status 段（属性名 master-<资源名>），断电节点的那份在它离开时就被删掉。controld 按 transition 通过 OCF 协议调用资源代理执行 promote。",
   },
   {
     stages: ["14"],

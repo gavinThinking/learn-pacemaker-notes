@@ -1,0 +1,194 @@
+---
+title: 节点属性：临时和永久两种，以及 attrd 怎么把临时属性写进 CIB
+date: 2026-10-06
+summary: 节点属性是挂在节点上的 name=value，调度器用它决定谁当主、资源失败了几次、节点能不能放资源。永久属性放在 configuration 段，由工具直接写 CIB；临时属性放在 status 段，经 attrd 写入，节点一离开或重启就被清掉。每个节点的 attrd 在内存里都存着全集群的属性值，只有选出来的一个 writer 负责写 CIB；设了阻尼的属性要等值稳定一段时间才写。
+layer: L2
+stage: "04"
+upstream:
+  - label: tools/crm_attribute.c：-l reboot / forever 分别写到哪
+    href: https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/tools/crm_attribute.c#L637-L679
+  - label: daemons/attrd/attrd_corosync.c：每个节点收到新值后怎么处理
+    href: https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/daemons/attrd/attrd_corosync.c#L232-L350
+  - label: daemons/attrd/attrd_cib.c：writer 怎么写 CIB
+    href: https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/daemons/attrd/attrd_cib.c#L483-L704
+  - label: daemons/attrd/attrd_elections.c：writer 怎么选、丢了怎么办
+    href: https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/daemons/attrd/attrd_elections.c#L21-L175
+  - label: lib/pacemaker/pcmk_sched_promotable.c：调度器读 promotion score
+    href: https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pacemaker/pcmk_sched_promotable.c#L634-L653
+links:
+  - to: "03"
+    why: 临时属性就是 status 段 node_state 下的 transient_attributes；status 段启动时整段扔掉，这是临时属性「重启就没」的一半原因。
+  - to: "01"
+    why: 各节点的 attrd 之间靠 CPG 广播互通新值，靠 CPG 的成员变化得知谁走了、该删谁的值。
+  - to: "10"
+    why: 资源代理在 monitor 里用 crm_attribute -p 写自己这台的 promotion score，controld 在操作失败后经 attrd 给 fail-count 加 1。
+  - to: "05"
+    why: 调度器把永久属性和临时属性合成一张表，location 规则、standby、maintenance 都从这张表里读。
+  - to: "11"
+    why: 资源失败几次就迁走，数的是这里的 fail-count 属性；它是临时属性，节点重启就清零。
+  - to: "12"
+    why: 一个节点的 controld 离开时 DC 就删掉它的临时属性，不等 fencing；fencing 成功后再删一次。
+  - to: "14"
+    why: PAF 按备库的复制进度算 promotion score，写进 master-<资源名> 属性，调度器靠它挑出提升哪个备库。
+---
+
+上一篇讲到，CIB 的 status 段里每个节点下面有一块 `transient_attributes`，由 attrd 写进来。本篇讲这块东西：节点属性是什么，临时和永久两种有什么区别，attrd（pacemaker-attrd，节点属性守护进程）怎么把一个新值送到每个节点、再写进 CIB，以及调度器拿这些属性做什么。
+
+节点属性就是挂在某个节点上的一对 `name=value`，例如 node2 上 `master-pgsql=1000`。资源代理、controld 和管理员都可以写；调度器读，用来决定谁当主库、某个资源已经失败了几次、这个节点能不能放资源。
+
+本篇的版本：Pacemaker 2.1.11。源码结论附链接，只依据文档的会单独说明。
+
+## 一句话
+
+永久属性写在 configuration 段，工具直接改 CIB，重启还在；临时属性写在 status 段，经 attrd 写入，节点离开集群或重启就被清掉。每个节点的 attrd 在内存里存着**所有节点**的临时属性值，一个新值先广播给所有 attrd，再由选出来的那一个 writer 写进 CIB。属性可以设阻尼：值变了先等几秒，这几秒里没再变才写，网络抖一下不会让资源来回迁。调度器读的 promotion score（谁当主）、fail-count（失败次数）都是临时属性。
+
+## 两种属性：放在哪、谁写、活多久
+
+<div class="table-scroll">
+
+| | 永久属性 | 临时属性 |
+| --- | --- | --- |
+| 在 CIB 里的位置 | `configuration/nodes/node/instance_attributes` | `status/node_state/transient_attributes` |
+| 怎么写 | `crm_attribute -l forever`，工具直接改 CIB | `crm_attribute -l reboot`、`attrd_updater`，交给本机 attrd |
+| 节点重启后 | 还在 | 没了 |
+| 典型用途 | 管理员给节点打标签，例如机房、磁盘类型；永久 standby | promotion score、fail-count、ping 的连通分数、正在关机的标记 |
+
+</div>
+
+`crm_attribute` 怎么分流（[`set_type`、`use_attrd`、`try_ipc_update`，`crm_attribute.c` 第 637–679 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/tools/crm_attribute.c#L637-L679)）：
+
+- `-l reboot` 换成 `status`，`-l forever` 换成 `nodes`。
+- 只有落在 `status` 的设置和删除才交给 attrd；查询（`-G`）一律直接读 CIB。
+- 没写 `-l` 时：带 `-p`（promotion score）就当临时属性；指定了 `-N` 节点就当**永久**属性；两者都没有就当成集群选项，写进 `crm_config`。所以 `crm_attribute -N node1 -n foo -v 1` 写的是永久属性，想写临时的必须带 `-l reboot`。
+- 交给 attrd 失败时，会改为直接写 CIB（[第 931–946 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/tools/crm_attribute.c#L931-L946)）。
+
+**临时属性在三个时刻被清掉**，都有源码：
+
+1. **attrd 启动时清自己的**。attrd 刚启动，内存里什么都没有，于是删掉 CIB 里本节点的整个 `transient_attributes`，让两边一致（[`attrd_cib_init`，`attrd_cib.c` 第 209–229 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/daemons/attrd/attrd_cib.c#L209-L229)）。日志 `Cleared transient node attributes for node1 from CIB`。源码注释说明了为什么要这一步：正常情况下节点离开时 DC 会删，但节点重启太快、集群层没察觉它离开过时，只能靠它自己删。
+2. **某个节点的 controld 离开时，由 DC 删**。DC 发现别的节点的 controld 退出了 CPG，就删掉那个节点的临时属性；如果离开的正好是 DC，其他每个节点都删一次（[`peer_update_callback`，`controld_callbacks.c` 第 222–257 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/daemons/controld/controld_callbacks.c#L222-L257)）。这一步不等 fencing。
+3. **fencing 成功后再删一次**，和那个节点的资源记录一起删（第 3 讲，[`controld_fencing.c` 第 218–272 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/daemons/controld/controld_fencing.c#L218-L272)）。
+
+再加上第 3 讲讲过的：based 启动时扔掉整个 status 段。临时属性因此不会跨过一次重启。
+
+**同名时临时属性优先**。调度器给每个节点建一张属性表：先读 configuration 段的永久属性，不覆盖已有的值（[`unpack.c` 第 691 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pengine/unpack.c#L691)）；再读 status 段的临时属性，覆盖同名的值（[第 1217 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pengine/unpack.c#L1217)，[`add_node_attrs`，第 5051–5091 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pengine/unpack.c#L5051-L5091)）。之后调度器只查这张合并后的表，不再区分来源。例如 node1 上永久的 `standby=off` 和临时的 `standby=on` 同时存在，调度器看到的是 `on`。
+
+## 一次更新怎么走
+
+以 controld 给 fail-count 加 1 为例，一个临时属性的新值从发起到写进 CIB：
+
+1. **本机 attrd 先展开**。客户端可以写 `value++`、`value+=5` 这种相对值，本机 attrd 按自己内存里这个节点的当前值算成具体数字，日志 `Expanded fail-count-pgsql#monitor_15000=value++ to 2`（[`handle_value_expansion`，`attrd_ipc.c` 第 325–352 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/daemons/attrd/attrd_ipc.c#L325-L352)）。广播出去的是算好的 `2`，不是 `value++`。
+2. **经 CPG 广播给所有节点的 attrd**，包括自己（[`send_update_msg_to_cluster`，第 356–375 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/daemons/attrd/attrd_ipc.c#L356-L375)）。
+3. **每个节点的 attrd 都更新自己的内存表**。表按属性名分，每个属性下存着它在所有节点上的值（[`update_attr_on_host`，`attrd_corosync.c` 第 232–350 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/daemons/attrd/attrd_corosync.c#L232-L350)）。值有变化就记 notice 日志 `Setting fail-count-pgsql#monitor_15000[node2]: 1 -> 2 | from node2 with no write delay …`。
+4. **只有 writer 写 CIB**。值变了以后，如果这个属性设了阻尼就启动计时器，否则立刻调 `attrd_write_or_elect_attribute`（[第 302–310 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/daemons/attrd/attrd_corosync.c#L302-L310)）：本节点是 writer 就写，不是就什么都不做；连 writer 是谁都还不知道时，发起一次选举（[`attrd_cib.c` 第 697–704 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/daemons/attrd/attrd_cib.c#L697-L704)）。
+5. **writer 写的是这个属性在所有节点上的值**，打包成一个 CIB 事务（[`write_attribute`，第 483–660 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/daemons/attrd/attrd_cib.c#L483-L660)），日志 `Sent CIB request 42 with 3 changes for fail-count-pgsql#monitor_15000 (set unspecified)`。上一次写这个属性的请求还没完成时，这次先不写；那次请求的回调里看到属性又变过，再写一次（[`attrd_cib_callback`，第 240–330 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/daemons/attrd/attrd_cib.c#L240-L330)）。之后由 based 广播、每个节点各自执行（第 3 讲）。
+
+<Diagram
+  name="attrd-update-path"
+  caption="新值先广播给所有 attrd，每个节点都记在内存里；只有 writer 写 CIB，设了阻尼的要等值稳定下来。"
+  verified="source"
+  rev="1"
+  gaps={[
+    "没画同步点：客户端可以要求等本机或全部节点都处理完再返回（attrd_sync.c）",
+    "没画 Pacemaker Remote 节点：它们不跑 attrd，属性由所连的集群节点代管",
+    "没画私有属性：用 attrd_updater -p 设的属性只在各节点内存里，writer 也不写 CIB",
+  ]}
+/>
+
+这个设计的结果是：**attrd 内存里的值可能比 CIB 新**。设了阻尼或者正在选 writer 时，`attrd_updater -Q -A -n <属性>` 查 attrd 内存，已经是新值；`crm_attribute -l reboot -G -n <属性>` 查 CIB，还是旧值。调度器只读 CIB，所以它看到的是后者。
+
+私有属性（`attrd_updater -p`）在第 5 步直接跳过，永远不进 CIB（[第 497 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/daemons/attrd/attrd_cib.c#L497)）。它适合只想在节点之间传递、不想让调度器看到的值。
+
+## writer：谁负责写 CIB
+
+writer 是 attrd 之间选出来的一个，和 DC 是两回事，可以不在同一台上。
+
+- **什么时候选**：有值要写、还不知道 writer 是谁、本机也没在关机时，发起选举，日志 `Starting an election to determine the writer`（[`attrd_start_election_if_needed`，`attrd_elections.c` 第 49–58 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/daemons/attrd/attrd_elections.c#L49-L58)）。选举超时 120 秒（[第 38 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/daemons/attrd/attrd_elections.c#L38)）。正在关机的节点投票时声明自己不当 writer。
+- **当选后做两件事**：把自己内存里的全部值广播给所有节点，再把全部属性重写一遍 CIB（[`attrd_election_cb`，第 21–32 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/daemons/attrd/attrd_elections.c#L21-L32)）。日志 `Recorded local node as attribute writer (was unset)`。
+- **writer 离开**：每个节点都清掉记录的 writer，日志 `Lost attribute writer node1`，然后发起新选举（[`attrd_remove_voter`，第 146–175 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/daemons/attrd/attrd_elections.c#L146-L175)）。源码注释给的理由：writer 关机过程中收到的更新它不会再写，必须有新 writer 补上。
+- **新节点加入**：writer 把全部值发给它（[`attrd_peer_change_cb`，`attrd_corosync.c` 第 195–205 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/daemons/attrd/attrd_corosync.c#L195-L205)）。如果其中某个关于新节点自己的值和新节点手里的不一样，以新节点自己的为准，它再广播一次（[第 270–279 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/daemons/attrd/attrd_corosync.c#L270-L279)），日志 `master-pgsql[node2]: local value '1000' takes priority over '5' from node1`。
+- **有人绕过 attrd 改了 status 段或 nodes 段**：writer 把全部属性重写一遍，盖掉别人的改动（[`attrd_cib_updated_cb`，`attrd_cib.c` 第 49–95 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/daemons/attrd/attrd_cib.c#L49-L95)），日志 `Updating all attributes after cib_diff_notify event triggered by …`。本节点的 `shutdown` 属性已经设上（正在关机）时，writer 不再这样重写（[第 55–58 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/daemons/attrd/attrd_cib.c#L55-L58)，标记在 [`attrd_corosync.c` 第 292–300 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/daemons/attrd/attrd_corosync.c#L292-L300) 设上）。所以用 `cibadmin` 直接改 `transient_attributes` 是白改。
+
+选举的胜负规则（谁的票更大）在公共库 `lib/cluster/election.c` 里，本篇没有核对。
+
+## 阻尼：值稳定了才写
+
+阻尼（dampening）是给一个属性设的写入延迟，用 `attrd_updater -d 5s` 这类参数指定。语义是「值变了以后，要连续这么久没有再变，才写进 CIB」：
+
+- 计时器每个属性一个，不是每个节点一个。任何节点上的值变了，都会重新开始计时（[第 302–307 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/daemons/attrd/attrd_corosync.c#L302-L307)；`mainloop_timer_start` 先停掉旧计时再开新的，[`mainloop.c` 第 1334–1341 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/common/mainloop.c#L1334-L1341)）。
+- 计时器到期时，把这个属性当前在所有节点上的值一起写（[`attribute_timer_cb`，`attrd_cib.c` 第 231–237 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/daemons/attrd/attrd_cib.c#L231-L237)）。
+- 阻尼长度本身改了，立刻写一次，否则反复改阻尼会让值永远写不出去（[`attrd_update_dampening`，`attrd_attributes.c` 第 83–116 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/daemons/attrd/attrd_attributes.c#L83-L116)）。
+
+Pacemaker 自带的 ping 资源代理就靠它：每次 monitor 用 `attrd_updater -n pingd -B <分数> -d 5s` 更新连通分数（[`ping.in` 第 321 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/agents/ocf/ping.in#L321)，`dampen` 默认 `5s`，[第 24 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/agents/ocf/ping.in#L24)）。按上面的规则推：网关断了 3 秒又恢复，分数从 1000 掉到 0 再回到 1000，都在 5 秒计时内，计时到期时写进 CIB 的还是 1000，调度器不会因为这 3 秒把资源迁走。这个例子是按源码推出来的，没有在集群上复现。
+
+代价是反应变慢：真断了也要等至少 5 秒，调度器才看得到。
+
+## 调度器读哪些属性
+
+<div class="table-scroll">
+
+| 属性名 | 谁写 | 调度器拿它做什么 |
+| --- | --- | --- |
+| `master-<资源名>` | 可提升资源的资源代理，`crm_attribute -p <分数>`（[名字的拼法，`attrs.c` 第 92–101 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/common/attrs.c#L92-L101)） | promotion score，挑哪个实例提升为主（[`promotion_attr_value`，`pcmk_sched_promotable.c` 第 634–653 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pacemaker/pcmk_sched_promotable.c#L634-L653)） |
+| `fail-count-<资源>#<操作>_<间隔毫秒>` | controld，操作失败后（[`update_failcount`，`controld_te_events.c` 第 178–287 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/daemons/controld/controld_te_events.c#L178-L287)） | 失败次数，到 `migration-threshold` 就把资源迁走（只依据文档，第 11 讲对照源码） |
+| `last-failure-<资源>#<操作>_<间隔毫秒>` | 同上，值是失败时刻的 Unix 时间 | 配合 `failure-timeout` 判断失败记录是否过期（只依据文档） |
+| `standby`、`maintenance` | 管理员 | 节点不放资源 / 不管这个节点上的资源（[`unpack_transient_attributes`，`unpack.c` 第 1209–1241 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pengine/unpack.c#L1209-L1241)） |
+| `pingd`（名字可配） | ping 资源代理 | 在 location 规则里引用，例如「`pingd` 未定义或为 0 的节点不放资源」（只依据文档） |
+| `shutdown` | DC 的 controld，收到某节点的关机请求时写入当前时间（[`controld_messages.c` 第 1284–1286 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/daemons/controld/controld_messages.c#L1284-L1286)） | 值不为空也不为 `0`，就认为这个节点要关机（[`pe__shutdown_requested`，`utils.c` 第 714–721 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pengine/utils.c#L714-L721)），资源该迁出 |
+
+</div>
+
+几处细节：
+
+- `crm_attribute -p` 不带资源名时，从环境变量 `OCF_RESOURCE_INSTANCE` 取，所以只能在资源代理里这样调用。旧脚本里的 `crm_master` 只是 `crm_attribute -n master-$OCF_RESOURCE_INSTANCE` 的包装，已经标为弃用（[`crm_master.in` 第 13 行、第 92 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/tools/crm_master.in#L92)）。
+- fail-count 的名字里用 `#` 隔开资源名和操作名，因为 `#` 不能出现在资源 ID 里，不会混淆（[`internal.h` 第 360–376 行的注释](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/include/crm/common/internal.h#L360-L376)）。例如 `fail-count-pgsql#monitor_15000`。
+- fail-count 怎么涨：周期性操作、promote、demote 失败写 `value++`；start 失败默认直接写 `INFINITY`，stop 失败也是（[第 205–239 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/daemons/controld/controld_te_events.c#L205-L239)）。`INFINITY` 意味着这个资源不会再在这台上启动，直到有人清掉它。
+
+## 回到主线：主库所在节点断电
+
+接第 3 讲。node1 断电之前，两台上的资源代理一直在 monitor 里刷新各自的 promotion score：node1 是主库，node2 是备库，node2 上的 `master-pgsql` 按复制进度给出一个分数（怎么算是第 14 讲的内容）。这些值存在两边 attrd 的内存里，也由 writer 写在 status 段。
+
+node1 断电后，属性这一层发生的事：
+
+1. **attrd 删掉 node1 的值**。node2 的 attrd 从 CPG 得知 node1 离开，在内存里删掉 node1 名下的全部值，日志 `Removing all node1 attributes for node loss`（[`attrd_corosync.c` 第 206–212 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/daemons/attrd/attrd_corosync.c#L206-L212)，[`attrd_peer_remove`，第 541–562 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/daemons/attrd/attrd_corosync.c#L541-L562)）。这只改内存，不碰 CIB。
+2. **node1 如果是 writer**，node2 记 `Lost attribute writer node1`，自己发起选举、当上 writer，再把自己手里的全部值重写一遍 CIB。
+3. **CIB 里 node1 的临时属性被删**。node2 的 controld 看到 node1 的 controld 离开，删掉 node1 的 `transient_attributes`（上文「三个时刻」的第 2 条）。node1 上「主库」的 promotion score 从这一刻起就不在 CIB 里了，不用等 fencing。
+4. **调度器挑提升目标**。fencing 成功、node1 的资源记录被删掉以后（第 3、12 讲），调度器在 node2 上找 `master-pgsql`，读到备库的分数，据此决定在 node2 上 promote。
+
+所以「谁该当主」不是调度器自己判断的，而是资源代理事先写进属性、调度器照着读。资源代理没写分数，调度器就没有依据提升任何实例。
+
+## 读状态时看哪里
+
+<div class="table-scroll">
+
+| 命令 | 看什么 |
+| --- | --- |
+| `crm_mon -A1` | 每个节点的属性，和资源状态一起显示 |
+| `attrd_updater -Q -A -n master-pgsql` | attrd 内存里这个属性在所有节点上的值，可能比 CIB 新 |
+| `crm_attribute -l reboot -N node2 -n master-pgsql -G` | CIB 里 node2 的这个临时属性，调度器看到的就是它 |
+| `crm_attribute -l forever -N node2 -n rack -G` | CIB 里 node2 的永久属性 |
+| `cibadmin -Q --scope status \| grep -A20 transient_attributes` | 直接看 status 段里的临时属性原文 |
+
+</div>
+
+日志里对应本篇几个环节的行（都来自 pacemaker-attrd）：
+
+<div class="table-scroll">
+
+| 日志 | 级别 | 说明 |
+| --- | --- | --- |
+| `Setting master-pgsql[node2]: 5 -> 1000 \| from node2 with no write delay …` | notice | 内存里的值变了；`write delay` 是阻尼长度 |
+| `Expanded fail-count-…=value++ to 2` | info | 相对值被展开成具体数字 |
+| `Sent CIB request 42 with 2 changes for master-pgsql (set unspecified)` | info | writer 把这个属性写进 CIB |
+| `Recorded local node as attribute writer (was unset)` | notice | 本机当选 writer |
+| `Lost attribute writer node1` | notice | writer 离开，接着重选 |
+| `Removing all node1 attributes for node loss` | notice | 有节点离开，删掉它在内存里的值 |
+| `Cleared transient node attributes for node1 from CIB` | info | attrd 启动时清掉了本节点在 CIB 里的临时属性 |
+
+</div>
+
+## 还没核对的
+
+- attrd 选举的胜负规则（`lib/cluster/election.c`），以及两个节点同时以为自己是 writer 时的收敛过程，只看了 attrd 这一侧的处理（[`attrd_check_for_new_writer`，第 116–136 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/daemons/attrd/attrd_elections.c#L116-L136)：发现另一个 writer 就重新选）。
+- 调度器读到 `shutdown` 之后怎么安排迁出、怎么把 promotion score 和约束分数合起来排序，留到第 5、7 讲对照 `lib/pacemaker`。
+- location 规则里引用节点属性的写法（`defined pingd`、`score-attribute`）只依据文档。
+- 阻尼吸收短暂抖动的例子是按源码推的，没有在集群上复现。

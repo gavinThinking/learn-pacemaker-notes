@@ -1,0 +1,103 @@
+<svg data-lpn-source-sha="0692c87dddf5bf99" width="100%" id="aup" viewBox="0 0 640 624" style="min-width: 560px" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="aup-title aup-desc">
+  <title id="aup-title">一次节点属性更新怎么走到 CIB</title>
+  <desc id="aup-desc">客户端（crm_attribute、attrd_updater 或 controld）把新值交给本机的 attrd。本机 attrd 先把 value++ 这类写法按自己内存里的当前值展开成具体数字，再经 Corosync CPG 广播给所有节点的 attrd。每个节点的 attrd 都更新自己的内存表，表里存着这个属性在所有节点上的值。其他节点到此为止，只有选出来的 writer 节点继续：如果这个属性设了阻尼，就等计时器到期，期间值再变就重新计时；没设就立刻写。writer 把这个属性在所有节点上的值打成一个 CIB 事务交给 based，based 广播后写进 status 段的 transient_attributes。</desc>
+  <defs>
+    <style>
+      #aup {
+        --aup-paper: var(--paper-raised, #ffffff);
+        --aup-node: var(--paper, #fdfcf9);
+        --aup-paper-2: var(--paper-muted, #f6f3ec);
+        --aup-ink: var(--ink, #22201b);
+        --aup-muted: var(--ink-muted, #6a6459);
+        --aup-soft: var(--ink-subtle, #7a7365);
+        --aup-rule: var(--line, #e7e1d5);
+        --aup-accent: var(--brand, #2f5fd0);
+        --aup-tint: var(--brand-light, #eef2fb);
+        --aup-sans: var(--font-body, "Inter Variable", Inter, -apple-system, "PingFang SC", "Noto Sans SC", sans-serif);
+        --aup-mono: var(--font-mono, ui-monospace, SFMono-Regular, Consolas, monospace);
+      }
+      #aup .aup-bg { fill: var(--aup-paper); }
+      #aup .aup-step { fill: var(--aup-node); stroke: var(--aup-ink); stroke-width: 1; }
+      #aup .aup-end { fill: color-mix(in srgb, var(--aup-ink) 3%, var(--aup-node)); stroke: color-mix(in srgb, var(--aup-ink) 30%, transparent); stroke-width: 1; }
+      #aup .aup-focal { fill: var(--aup-tint); stroke: var(--aup-accent); stroke-width: 1.2; }
+      #aup .aup-arrow { fill: none; stroke: var(--aup-muted); stroke-width: 1.2; }
+      #aup .aup-head { fill: var(--aup-muted); }
+      #aup .aup-mask { fill: var(--aup-paper); }
+      #aup .aup-name { font: 600 12px var(--aup-sans); fill: var(--aup-ink); }
+      #aup .aup-sub { font: 400 10px var(--aup-sans); fill: var(--aup-muted); }
+      #aup .aup-mono { font: 400 9px var(--aup-mono); fill: var(--aup-muted); }
+      #aup .aup-label { font: 400 10px var(--aup-sans); fill: var(--aup-muted); }
+      #aup .aup-rule { stroke: var(--aup-rule); stroke-width: 0.8; }
+    </style>
+    <marker id="aup-arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+      <polygon class="aup-head" points="0 0, 8 3, 0 6"/>
+    </marker>
+  </defs>
+
+  <rect class="aup-bg" width="640" height="624"/>
+
+  <!-- 连线（先画，压在框下面） -->
+  <path class="aup-arrow" d="M272 52 H304" marker-end="url(#aup-arrow)"/>
+  <path class="aup-arrow" d="M460 80 V120" marker-end="url(#aup-arrow)"/>
+  <path class="aup-arrow" d="M112 176 V216" marker-end="url(#aup-arrow)"/>
+  <path class="aup-arrow" d="M320 176 V216" marker-end="url(#aup-arrow)"/>
+  <path class="aup-arrow" d="M320 272 V308" marker-end="url(#aup-arrow)"/>
+  <path class="aup-arrow" d="M416 344 H456" marker-end="url(#aup-arrow)"/>
+  <path class="aup-arrow" d="M320 380 V412" marker-end="url(#aup-arrow)"/>
+  <path class="aup-arrow" d="M536 372 V432 Q536 440 528 440 H464" marker-end="url(#aup-arrow)"/>
+  <path class="aup-arrow" d="M320 468 V500" marker-end="url(#aup-arrow)"/>
+
+  <rect class="aup-mask" x="424" y="322" width="24" height="12" rx="2"/>
+  <text class="aup-label" x="436" y="332" text-anchor="middle">是</text>
+  <rect class="aup-mask" x="328" y="390" width="24" height="12" rx="2"/>
+  <text class="aup-label" x="340" y="400" text-anchor="middle">否</text>
+
+  <!-- 发起 -->
+  <rect class="aup-end" x="24" y="24" width="248" height="56" rx="20"/>
+  <text class="aup-name" x="148" y="47" text-anchor="middle">客户端设置一个属性</text>
+  <text class="aup-mono" x="148" y="65" text-anchor="middle">crm_attribute · attrd_updater · controld</text>
+
+  <rect class="aup-step" x="304" y="24" width="312" height="56" rx="6"/>
+  <text class="aup-name" x="460" y="47" text-anchor="middle">本机 attrd 展开 value++</text>
+  <text class="aup-sub" x="460" y="65" text-anchor="middle">结果经 CPG 广播给所有节点的 attrd</text>
+
+  <!-- 所有节点 -->
+  <rect class="aup-step" x="80" y="120" width="480" height="56" rx="6"/>
+  <text class="aup-name" x="320" y="143" text-anchor="middle">每个节点的 attrd 都更新内存表</text>
+  <text class="aup-sub" x="320" y="161" text-anchor="middle">表里存着这个属性在所有节点上的值</text>
+
+  <rect class="aup-end" x="24" y="216" width="176" height="56" rx="20"/>
+  <text class="aup-name" x="112" y="239" text-anchor="middle">其他节点</text>
+  <text class="aup-sub" x="112" y="257" text-anchor="middle">值只留在内存里</text>
+
+  <rect class="aup-focal" x="220" y="216" width="200" height="56" rx="6"/>
+  <text class="aup-name" x="320" y="239" text-anchor="middle">writer 节点</text>
+  <text class="aup-sub" x="320" y="257" text-anchor="middle">选出来写 CIB 的那一个</text>
+
+  <!-- 阻尼 -->
+  <polygon class="aup-step" points="320,308 416,344 320,380 224,344"/>
+  <text class="aup-mono" x="320" y="340" text-anchor="middle">--delay</text>
+  <text class="aup-name" x="320" y="356" text-anchor="middle">设了阻尼？</text>
+
+  <rect class="aup-step" x="456" y="316" width="160" height="56" rx="6"/>
+  <text class="aup-name" x="536" y="339" text-anchor="middle">等计时器到期</text>
+  <text class="aup-sub" x="536" y="357" text-anchor="middle">期间再变就重新计时</text>
+
+  <!-- 写 CIB -->
+  <rect class="aup-step" x="176" y="412" width="288" height="56" rx="6"/>
+  <text class="aup-name" x="320" y="435" text-anchor="middle">writer 写一个 CIB 事务</text>
+  <text class="aup-sub" x="320" y="453" text-anchor="middle">这个属性在所有节点上的值一起写</text>
+
+  <rect class="aup-end" x="176" y="500" width="288" height="56" rx="20"/>
+  <text class="aup-name" x="320" y="523" text-anchor="middle">based 广播，写进 status 段</text>
+  <text class="aup-mono" x="320" y="541" text-anchor="middle">node_state/transient_attributes</text>
+
+  <!-- 图例 -->
+  <line class="aup-rule" x1="24" y1="580" x2="616" y2="580"/>
+  <rect class="aup-end" x="24" y="596" width="24" height="12" rx="6"/>
+  <text class="aup-label" x="54" y="606">开始 / 结果</text>
+  <polygon class="aup-step" points="136,602 148,596 160,602 148,608"/>
+  <text class="aup-label" x="168" y="606">按条件分支</text>
+  <rect class="aup-focal" x="252" y="596" width="24" height="12" rx="2"/>
+  <text class="aup-label" x="282" y="606">只有 writer 写 CIB，其他节点的值只在内存里</text>
+</svg>
