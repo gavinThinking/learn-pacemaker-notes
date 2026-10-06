@@ -108,6 +108,7 @@ export const layers: Layer[] = [
         title: "controld 与 DC 选举",
         summary: "为什么只有一个节点做决定，这个节点没了谁接手。",
         upstream: "daemons/controld",
+        note: "09-controld-dc",
       },
       {
         no: "10",

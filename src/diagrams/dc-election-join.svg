@@ -1,0 +1,115 @@
+<svg data-lpn-source-sha="8478b0eabaffa985" width="100%" id="dcel" viewBox="0 0 640 480" style="min-width: 560px" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="dcel-title dcel-desc">
+  <title id="dcel-title">controld 从 DC 掉线到新 DC 开始调度经过的状态</title>
+  <desc id="dcel-desc">普通成员的 controld 处于 S_NOT_DC。发现 DC 掉线后进入 S_ELECTION，广播投票，依次比较特性版本、controld 进程用掉的 CPU 时间和主机名。输了进入 S_PENDING，等新 DC 发来 join offer，超过 dc-deadtime 没等到就重新选举；join 完成后回到 S_NOT_DC。赢了进入 S_INTEGRATION，给每个节点发 join offer，收齐 join 请求后进入 S_FINALIZE_JOIN：从 CIB 版本最新的节点同步整份 CIB，再用每个节点自己上报的资源历史覆盖 status 段里该节点的那部分。所有节点确认后进入 S_POLICY_ENGINE 请调度器计算，S_TRANSITION_ENGINE 执行，执行完回到 S_IDLE；有新事件再回到 S_POLICY_ENGINE。</desc>
+  <defs>
+    <style>
+      #dcel {
+        --dcel-paper: var(--paper-raised, #ffffff);
+        --dcel-node: var(--paper, #fdfcf9);
+        --dcel-paper-2: var(--paper-muted, #f6f3ec);
+        --dcel-ink: var(--ink, #22201b);
+        --dcel-muted: var(--ink-muted, #6a6459);
+        --dcel-soft: var(--ink-subtle, #7a7365);
+        --dcel-rule: var(--line, #e7e1d5);
+        --dcel-accent: var(--brand, #2f5fd0);
+        --dcel-tint: var(--brand-light, #eef2fb);
+        --dcel-sans: var(--font-body, "Inter Variable", Inter, -apple-system, "PingFang SC", "Noto Sans SC", sans-serif);
+        --dcel-mono: var(--font-mono, ui-monospace, SFMono-Regular, Consolas, monospace);
+      }
+      #dcel .dcel-bg { fill: var(--dcel-paper); }
+      #dcel .dcel-band { fill: var(--dcel-paper-2); }
+      #dcel .dcel-step { fill: var(--dcel-node); stroke: var(--dcel-ink); stroke-width: 1; }
+      #dcel .dcel-end { fill: color-mix(in srgb, var(--dcel-ink) 3%, var(--dcel-node)); stroke: color-mix(in srgb, var(--dcel-ink) 30%, transparent); stroke-width: 1; }
+      #dcel .dcel-focal { fill: var(--dcel-tint); stroke: var(--dcel-accent); stroke-width: 1.2; }
+      #dcel .dcel-arrow { fill: none; stroke: var(--dcel-muted); stroke-width: 1.2; }
+      #dcel .dcel-dashed { stroke-dasharray: 5 4; }
+      #dcel .dcel-head { fill: var(--dcel-muted); }
+      #dcel .dcel-mask { fill: var(--dcel-paper); }
+      #dcel .dcel-name { font: 600 12px var(--dcel-sans); fill: var(--dcel-ink); }
+      #dcel .dcel-sub { font: 400 10px var(--dcel-sans); fill: var(--dcel-muted); }
+      #dcel .dcel-mono { font: 400 9px var(--dcel-mono); fill: var(--dcel-muted); }
+      #dcel .dcel-tag { font: 600 9px var(--dcel-mono); fill: var(--dcel-soft); letter-spacing: 0.08em; }
+      #dcel .dcel-label { font: 400 10px var(--dcel-sans); fill: var(--dcel-muted); }
+      #dcel .dcel-rule { stroke: var(--dcel-rule); stroke-width: 0.8; }
+    </style>
+    <marker id="dcel-arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+      <polygon class="dcel-head" points="0 0, 8 3, 0 6"/>
+    </marker>
+  </defs>
+
+  <rect class="dcel-bg" width="640" height="480"/>
+
+  <!-- 连线 -->
+  <path class="dcel-arrow" d="M184 72 H240" marker-end="url(#dcel-arrow)"/>
+  <path class="dcel-arrow" d="M400 72 H456" marker-end="url(#dcel-arrow)"/>
+  <path class="dcel-arrow" d="M320 104 V200 Q320 208 312 208 H184" marker-end="url(#dcel-arrow)"/>
+  <path class="dcel-arrow" d="M104 176 V104" marker-end="url(#dcel-arrow)"/>
+  <path class="dcel-arrow" d="M536 104 V176" marker-end="url(#dcel-arrow)"/>
+  <path class="dcel-arrow" d="M536 240 V312" marker-end="url(#dcel-arrow)"/>
+  <path class="dcel-arrow" d="M456 344 H400" marker-end="url(#dcel-arrow)"/>
+  <path class="dcel-arrow" d="M240 344 H184" marker-end="url(#dcel-arrow)"/>
+  <path class="dcel-arrow dcel-dashed" d="M104 376 V392 Q104 400 112 400 H528 Q536 400 536 392 V376" marker-end="url(#dcel-arrow)"/>
+
+  <rect class="dcel-mask" x="190" y="50" width="44" height="12" rx="2"/>
+  <text class="dcel-label" x="212" y="60" text-anchor="middle">DC 掉线</text>
+  <rect class="dcel-mask" x="414" y="50" width="28" height="12" rx="2"/>
+  <text class="dcel-label" x="428" y="60" text-anchor="middle">赢了</text>
+  <rect class="dcel-mask" x="326" y="146" width="28" height="12" rx="2"/>
+  <text class="dcel-label" x="328" y="156">输了</text>
+  <rect class="dcel-mask" x="110" y="134" width="56" height="12" rx="2"/>
+  <text class="dcel-label" x="112" y="144">join 完成</text>
+  <rect class="dcel-mask" x="452" y="134" width="78" height="12" rx="2"/>
+  <text class="dcel-label" x="528" y="144" text-anchor="end">各节点都回了请求</text>
+  <rect class="dcel-mask" x="452" y="270" width="78" height="12" rx="2"/>
+  <text class="dcel-label" x="528" y="280" text-anchor="end">各节点都确认了</text>
+  <rect class="dcel-mask" x="272" y="410" width="96" height="12" rx="2"/>
+  <text class="dcel-label" x="320" y="420" text-anchor="middle">有新事件，重新计算</text>
+
+  <!-- 第一行 -->
+  <rect class="dcel-step" x="24" y="40" width="160" height="64" rx="6"/>
+  <text class="dcel-name" x="104" y="62" text-anchor="middle">普通成员</text>
+  <text class="dcel-mono" x="104" y="78" text-anchor="middle">S_NOT_DC</text>
+  <text class="dcel-sub" x="104" y="94" text-anchor="middle">听 DC 安排</text>
+
+  <rect class="dcel-focal" x="240" y="40" width="160" height="64" rx="6"/>
+  <text class="dcel-name" x="320" y="62" text-anchor="middle">选举</text>
+  <text class="dcel-mono" x="320" y="78" text-anchor="middle">S_ELECTION</text>
+  <text class="dcel-sub" x="320" y="94" text-anchor="middle">比版本、CPU 时间、主机名</text>
+
+  <rect class="dcel-step" x="456" y="40" width="160" height="64" rx="6"/>
+  <text class="dcel-name" x="536" y="62" text-anchor="middle">新 DC 招人</text>
+  <text class="dcel-mono" x="536" y="78" text-anchor="middle">S_INTEGRATION</text>
+  <text class="dcel-sub" x="536" y="94" text-anchor="middle">给每个节点发 join offer</text>
+
+  <!-- 第二行 -->
+  <rect class="dcel-step" x="24" y="176" width="160" height="64" rx="6"/>
+  <text class="dcel-name" x="104" y="198" text-anchor="middle">等新 DC</text>
+  <text class="dcel-mono" x="104" y="214" text-anchor="middle">S_PENDING</text>
+  <text class="dcel-sub" x="104" y="230" text-anchor="middle">等 offer，超时就重选</text>
+
+  <rect class="dcel-focal" x="456" y="176" width="160" height="64" rx="6"/>
+  <text class="dcel-name" x="536" y="198" text-anchor="middle">对齐状态</text>
+  <text class="dcel-mono" x="536" y="214" text-anchor="middle">S_FINALIZE_JOIN</text>
+  <text class="dcel-sub" x="536" y="230" text-anchor="middle">同步 CIB，写回各节点历史</text>
+
+  <!-- 第三行 -->
+  <rect class="dcel-step" x="24" y="312" width="160" height="64" rx="6"/>
+  <text class="dcel-name" x="104" y="334" text-anchor="middle">空闲</text>
+  <text class="dcel-mono" x="104" y="350" text-anchor="middle">S_IDLE</text>
+  <text class="dcel-sub" x="104" y="366" text-anchor="middle">等下一次事件</text>
+
+  <rect class="dcel-step" x="240" y="312" width="160" height="64" rx="6"/>
+  <text class="dcel-name" x="320" y="334" text-anchor="middle">按图执行</text>
+  <text class="dcel-mono" x="320" y="350" text-anchor="middle">S_TRANSITION_ENGINE</text>
+  <text class="dcel-sub" x="320" y="366" text-anchor="middle">第 8 讲的 transition</text>
+
+  <rect class="dcel-step" x="456" y="312" width="160" height="64" rx="6"/>
+  <text class="dcel-name" x="536" y="334" text-anchor="middle">调度</text>
+  <text class="dcel-mono" x="536" y="350" text-anchor="middle">S_POLICY_ENGINE</text>
+  <text class="dcel-sub" x="536" y="366" text-anchor="middle">请 schedulerd 算图</text>
+
+  <!-- 图例 -->
+  <line class="dcel-rule" x1="24" y1="440" x2="616" y2="440"/>
+  <rect class="dcel-focal" x="24" y="452" width="24" height="12" rx="2"/>
+  <text class="dcel-label" x="54" y="462">重点：决定谁是 DC，和新 DC 怎样拿到可信的状态</text>
+</svg>
