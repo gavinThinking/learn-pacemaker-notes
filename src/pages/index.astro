@@ -1,13 +1,12 @@
 ---
-import { getCollection } from "astro:content";
-
 import Base from "../layouts/Base.astro";
-import { layers, nextStage, progress, statusOf } from "../data/roadmap";
+import { stageRef, stepChecked } from "../data/network";
+import { nextStage, progress } from "../data/roadmap";
 import { site } from "../data/site";
+import { storyline } from "../data/storyline";
 
-const notes = (await getCollection("notes"))
-  .sort((a, b) => b.data.date.valueOf() - a.data.date.valueOf())
-  .slice(0, 3);
+const next = stageRef(nextStage.no);
+const lit = storyline.filter((s) => stepChecked(s.stages)).length;
 
 /** 一次调度回路，取自上游文档 Pacemaker Explained §1.2.2。 */
 const loop = [
@@ -22,31 +21,29 @@ const loop = [
 <Base>
   <section class="shell hero">
     <div>
-      <p class="eyebrow">对照 Pacemaker {site.upstream.version}</p>
+      <p class="eyebrow">对照 Pacemaker {site.upstream.version} 源码</p>
       <h1 class="display">集群为什么<br />这样做决定。</h1>
       <p class="lede">
-        这是一份学 <a href={site.upstream.href}>Pacemaker {site.upstream.version}</a>
-        的公开记录。按它自己的分工拆开——谁还在集群里、共享状态放在哪、资源该放哪、动作失败了怎么办、
-        状态不确定时怎样不让两边同时写——每一层对照固定版本的文档和源码，并在一套自建的多节点集群上验证。
+        AI 对照 <a href={site.upstream.href}>Pacemaker {site.upstream.version}</a> 的文档和源码，一讲拆开一件事：
+        节点怎么判定掉线、资源该放哪、什么时候必须 fencing。我跟着读、追问。
       </p>
 
-      <a class="next-block" href="/roadmap/">
+      <a class="next-block" href={next.href}>
         <span>
-          <span class="next-block__label">下一个阶段</span>
-          <span class="next-block__title">{nextStage.no} · {nextStage.title}</span>
+          <span class="next-block__label">下一讲</span>
+          <span class="next-block__title">第 {Number(next.no)} 讲 · {next.title}</span>
         </span>
         <span class="next-block__arrow" aria-hidden="true">→</span>
       </a>
 
       <div class="hero__actions">
-        <a class="action" href="/roadmap/">看完整学习路线</a>
-        <a class="action action--quiet" href="/map/">先看架构地图</a>
+        <a class="action" href="/notes/">读已发的讲义</a>
+        <a class="action action--quiet" href="/network/">看知识网络</a>
       </div>
 
       <p class="facts">
-        <span>{progress.total} 个阶段</span>
-        <span>手记 {progress.notes} 篇</span>
-        <span>平台验证 {progress.evidence} 项</span>
+        <span>已发 {progress.notes} / {progress.total} 讲</span>
+        <span>故障主线点亮 {lit} / {storyline.length} 步</span>
       </p>
     </div>
 
@@ -64,61 +61,5 @@ const loop = [
       }
       </ol>
     </div>
-  </section>
-
-  <section class="shell section">
-    <h2 class="section__title">按 Pacemaker 自己的分工拆</h2>
-    <p class="lede">
-      不按手册目录读，按「这一层要成立，必须先懂哪一层」读。下面每张卡片后面的数字是这一层发了几篇手记。
-    </p>
-
-    <div class="cards" style="margin-top:1.6rem">
-      {
-        layers.map((layer) => (
-          <a class="card" href="/roadmap/">
-            <span class="card__no">
-              {layer.no} · {layer.stages.filter((s) => statusOf(s) !== "todo").length}/
-              {layer.stages.length}
-            </span>
-            <h3>{layer.name}</h3>
-            <p>{layer.goal}</p>
-          </a>
-        ))
-      }
-    </div>
-  </section>
-
-  {
-    notes.length > 0 && (
-      <section class="shell section">
-        <h2 class="section__title">最新手记</h2>
-        <ul class="note-list">
-          {notes.map((note) => (
-            <li class="note-list__item">
-              <p class="note-meta">
-                <time datetime={note.data.date.toISOString()}>
-                  {note.data.date.toISOString().slice(0, 10)}
-                </time>
-                {note.data.stage ? ` · 阶段 ${note.data.stage}` : ""}
-              </p>
-              <h2>
-                <a href={`/notes/${note.id}/`}>{note.data.title}</a>
-              </h2>
-              <p style="margin:0;color:var(--ink-muted)">{note.data.summary}</p>
-            </li>
-          ))}
-        </ul>
-      </section>
-    )
-  }
-
-  <section class="shell section">
-    <h2 class="section__title">这个站不声称什么</h2>
-    <p class="lede">
-      我是学习者，不是 Pacemaker 的维护者，本站与 ClusterLabs 无隶属关系。
-      手记正文由 AI 撰写，我跟着读、追问、学习；AI 也会写错，所以每条源码结论都链到 2.1.11 tag，可以自己核对。
-      实验平台是个人搭的练习集群，没有经过生产验证。哪些结论核对过源码、哪些只依据文档、哪些还没验证，
-      都写在<a href="/evidence/">证据边界</a>里。
-    </p>
   </section>
 </Base>

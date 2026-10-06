@@ -1,12 +1,18 @@
 ---
 import Base from "../layouts/Base.astro";
 import { site } from "../data/site";
+
+/** 平台状态快照的日期。平台仓库私有，这里只放摘要，更新时连同日期一起改。 */
+const asOf = "2026-10-06";
 ---
 
-<Base title="关于" description="谁在写这个站、为什么学 Pacemaker、怎么联系。">
+<Base
+  title="关于"
+  description="谁写这些讲义、结论各自依据什么、用来验证的实验平台做到哪了。"
+>
   <div class="shell page-head">
     <p class="eyebrow">关于</p>
-    <h1 class="display">为什么学 Pacemaker</h1>
+    <h1 class="display">谁写的，凭什么信</h1>
   </div>
 
   <div class="shell">
@@ -14,18 +20,90 @@ import { site } from "../data/site";
       <p>
         我是 {site.author}（{site.brand}），做过几年集群高可用和 PostgreSQL 持久化方面的工作，用 Pacemaker、Corosync
         和 PAF 管过多节点集群里的资源。用过不等于懂：调度为什么这样算、fencing 为什么不能省、切换时数据怎么保证不丢，
-        这些需要回到文档和源码里重新学一遍，再在自己的集群上验证。这个站就是这个过程的公开记录。
+        这些需要回到文档和源码里重新学一遍，再在自己的集群上验证。
       </p>
       <p>
-        手记正文由 AI 按学习路线逐篇撰写，我跟着读、追问、学习。为了让读者能分辨哪些可信，每篇都标明依据：
+        讲义正文由 AI 按路线逐讲撰写，我跟着读、追问、学习。AI 也会写错，所以每讲都标明依据：
         核对过源码的结论链到 Pacemaker {site.upstream.version} 的 tag，只依据文档的照实写，还没验证的不当结论写。
-        具体口径见<a href="/evidence/">证据边界</a>。
+        口径见下面的<a href="#evidence">证据边界</a>。
       </p>
       <p>
-        同一个系列还有一个站：<a href="https://learn-pi-notes.vercel.app">学 Pi 手记</a>，学的是 Agent Runtime。
-      </p>
-      <p>
+        我不是 Pacemaker 的维护者，本站与 ClusterLabs 无隶属关系。同一个系列还有一个站：
+        <a href="https://learn-pi-notes.vercel.app">学 Pi 手记</a>，学的是 Agent Runtime。
         发现哪里写错了，欢迎<a href={`mailto:${site.email}`}>写信</a>告诉我。
+      </p>
+
+      <h2 id="evidence">证据边界：哪些核对过，哪些没有</h2>
+      <p>
+        读者应该能分清「源码里就是这样」「文档这么写」和「我以为是这样」。
+      </p>
+      <div class="table-scroll">
+        <table>
+          <thead><tr><th>等级</th><th>含义</th></tr></thead>
+          <tbody>
+            <tr><td>已对照源码</td><td>在 <a href={site.upstream.href}>Pacemaker-2.1.11</a> tag 里找到了对应代码</td></tr>
+            <tr><td>仅依据文档</td><td>照 <a href={site.upstream.docs}>Pacemaker Explained 2.1</a> 等官方文档写的，还没对过源码</td></tr>
+            <tr><td>预测</td><td>读之前先写下的判断，等着被源码或实验推翻</td></tr>
+            <tr><td>平台验证</td><td>在自建集群上实际跑过，结论附验证摘要</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>现状</h3>
+      <ul>
+        <li><a href="/roadmap/#overview">全景</a>的守护进程图：仅依据文档；守护进程目录名已在 2.1.11 tag 里核对过。</li>
+        <li><a href="/notes/01-corosync-membership/">第 1 讲</a>：Totem 超时推导、成员状态机和通知 Pacemaker 的路径已对照源码；knet 链路行为只依据手册；文中的掉线耗时是读源码推算的，没有测过。</li>
+        <li><a href="#platform">实验平台</a>还没有部署任何资源，故障演练都没做过。</li>
+      </ul>
+
+      <h3>版本</h3>
+      <p>
+        所有源码引用都钉在 Pacemaker {site.upstream.version}。Pacemaker 3.x 改了不少默认行为和命令，
+        本站的结论不保证适用于 3.x。
+      </p>
+
+      <h2 id="platform">实验平台：在自己的集群上验证</h2>
+      <p>
+        讲义里的结论，能在集群上复现的都会去复现。为此我单独搭了一套练习集群：用 Pacemaker
+        {site.upstream.version} 从源码编译，节点是本机虚拟机里的系统容器，一条命令从零拉起。
+        平台代码是私有仓库，本站只放从它导出的摘要和验证结果。以下状态截至 {asOf}。
+      </p>
+
+      <h3>规模</h3>
+      <p>
+        目标是 4 组、每组 2 个节点，一共 8 个节点，管 9 类资源。先做 1 组 2 个节点的最小版本，跑通后再扩。
+      </p>
+
+      <h3>用到的 Pacemaker 资源形态</h3>
+      <div class="table-scroll">
+        <table>
+          <thead>
+            <tr><th>形态</th><th>在平台上管什么</th><th>对应阶段</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>promotable clone</td><td>PostgreSQL 主备（PAF 管理）；一个一主多备的应用服务</td><td>07 · 14</td></tr>
+            <tr><td>clone</td><td>每组一份的独立数据库、容器服务、配置管理服务</td><td>07</td></tr>
+            <tr><td>普通资源</td><td>跟随主库或主服务漂移的浮动 IP、数据目录的文件系统挂载</td><td>05 · 06</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>要演练的故障</h3>
+      <ul>
+        <li>主库所在节点宕机：备节点接管数据目录、浮动 IP 跟着走</li>
+        <li>宕机节点重新加入集群</li>
+        <li>一整组掉线</li>
+        <li>网络分区：哪一侧保有 quorum、另一侧怎么处理</li>
+      </ul>
+
+      <h3>当前进度</h3>
+      <ul>
+        <li>Pacemaker {site.upstream.version} 已从源码编译，2 节点集群能一条命令拉起并取得 quorum，版本核对通过。</li>
+        <li>集群里还没有资源。下一步是第一组的 PostgreSQL 主备、数据目录挂载和浮动 IP。</li>
+      </ul>
+      <p>
+        讲义不等平台：一讲发布就算这个阶段完成。平台上验证过的结论是补充，会写进对应的讲义，并在
+        <a href="/roadmap/#stages">路线</a>里标「平台验证」。
       </p>
     </article>
   </div>

@@ -8,15 +8,15 @@
  * 没有验证过的东西只出现在「证据边界」里，不出现在主张里。
  */
 export const site = {
-  name: "学 Pacemaker 手记",
+  name: "Pacemaker 讲义",
   latin: "LEARNING PACEMAKER",
-  sub: "跟着 Pacemaker 学集群高可用",
+  sub: "AI 对照 2.1.11 源码写，我跟着学集群高可用",
   author: "flyer",
   brand: "星鸦",
-  title: "学 Pacemaker 手记 · 跟着 Pacemaker 学集群高可用",
-  tagline: "一个学习者的公开记录",
+  title: "Pacemaker 讲义 · AI 对照 2.1.11 源码写，我跟着学集群高可用",
+  tagline: "跟着源码学集群高可用",
   description:
-    "按 Pacemaker 自己的分工——成员、集群状态、调度、执行、fencing——一层层拆开学，并在一套自建的多节点集群上验证。手记引用固定版本的上游文档和源码。",
+    "按 Pacemaker 自己的分工——成员、集群状态、调度、执行、fencing——一层层拆开学，并在一套自建的多节点集群上验证。讲义引用固定版本的上游文档和源码。",
   /** 唯一的事实源，版本写死。 */
   upstream: {
     name: "Pacemaker",
@@ -26,13 +26,10 @@ export const site = {
   },
   email: "ryanzxg@gmail.com",
   nav: [
-    { href: "/map/", label: "架构地图" },
-    { href: "/roadmap/", label: "学习路线" },
+    { href: "/notes/", label: "讲义" },
+    { href: "/roadmap/", label: "路线" },
     { href: "/network/", label: "知识网络" },
     { href: "/sketches/", label: "图解" },
-    { href: "/notes/", label: "手记" },
-    { href: "/platform/", label: "实验平台" },
-    { href: "/evidence/", label: "证据边界" },
     { href: "/about/", label: "关于" },
   ],
 } as const;

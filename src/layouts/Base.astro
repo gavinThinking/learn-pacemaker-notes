@@ -8,7 +8,7 @@ import { site } from "../data/site";
 interface Props {
   title?: string;
   description?: string;
-  /** 手记页传进来，用于生成 BlogPosting 结构化数据。 */
+  /** 讲义页传进来，用于生成 BlogPosting 结构化数据。 */
   published?: Date;
 }
 
@@ -19,7 +19,7 @@ const canonical = new URL(path, Astro.site);
 const ogImage = new URL("/og.png", Astro.site);
 
 /**
- * 结构化数据。手记走 BlogPosting，其余页面走 WebSite。
+ * 结构化数据。讲义走 BlogPosting，其余页面走 WebSite。
  * 没有它，日期和作者对搜索引擎不可读——富摘要一律拿不到。
  */
 const jsonLd = published
@@ -79,7 +79,7 @@ const isCurrent = (href: string) => path === href || path.startsWith(href);
     <link
       rel="alternate"
       type="application/rss+xml"
-      title={`${site.name} · 手记`}
+      title={site.name}
       href="/rss.xml"
     />
     <script type="application/ld+json" set:html={JSON.stringify(jsonLd)} is:inline
@@ -135,7 +135,7 @@ const isCurrent = (href: string) => path === href || path.startsWith(href);
     <footer class="footer">
       <div class="shell footer__inner">
         <p style="margin:0">
-          {site.name} —— {site.tagline}。作者 {site.author}（{site.brand}）。<br
+          {site.name} —— {site.tagline}。AI 撰写讲义，{site.author} 跟读、追问。<br
           />
           学习对象为 <a href={site.upstream.href}
             >{site.upstream.name} {site.upstream.version}</a
@@ -143,7 +143,7 @@ const isCurrent = (href: string) => path === href || path.startsWith(href);
         </p>
         <div class="footer__links">
           <a href="/rss.xml">订阅</a>
-          <a href="/evidence/">证据边界</a>
+          <a href="/about/#evidence">证据边界</a>
           <a href={`mailto:${site.email}`}>写信</a>
         </div>
       </div>

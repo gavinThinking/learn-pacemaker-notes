@@ -47,7 +47,7 @@ const siblings = sketches.filter((x) => x.group === s.group && x.slug !== s.slug
             对应阶段 <a href={`/roadmap/#${s.group}`}>{stage.no} · {stage.title}</a>
             {stage.note && (
               <>
-                ，<a href={`/notes/${stage.note}/`}>读这一阶段的手记 →</a>
+                ，<a href={`/notes/${stage.note}/`}>读这一阶段的讲义 →</a>
               </>
             )}
           </p>
@@ -66,7 +66,7 @@ const siblings = sketches.filter((x) => x.group === s.group && x.slug !== s.slug
       </div>
 
       <p class="sketch-page__note">
-        AI 生成的概念图，用来建立直觉，不作为证据；细节以手记和 Pacemaker 2.1.11 源码为准。
+        AI 生成的概念图，用来建立直觉，不作为证据；细节以讲义和 Pacemaker 2.1.11 源码为准。
         <a href={s.image.src}>看原尺寸</a>
       </p>
 

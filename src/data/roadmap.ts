@@ -2,7 +2,7 @@
  * 学习路线：6 层 14 个阶段，顺序是「这一层要成立，必须先懂哪一层」。
  *
  * 状态只看产出物，不评价掌握程度：
- * - note：已发布手记的 slug，写了才填，填了这个阶段就算完成；
+ * - note：已发布讲义的 slug，写了才填，填了这个阶段就算完成；
  * - evidence：实验平台上对应的验证，可选，用文字写，不放链接（平台仓库私有）。
  */
 export type StageStatus = "todo" | "done";
@@ -149,7 +149,7 @@ export const layers: Layer[] = [
 
 export const statusLabels: Record<StageStatus, string> = {
   todo: "未开始",
-  done: "手记已发",
+  done: "讲义已发",
 };
 
 export const statusOf = (s: Stage): StageStatus => (s.note ? "done" : "todo");

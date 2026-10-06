@@ -1,6 +1,6 @@
 /**
- * 知识网络：阶段之间的连接。连接只来自已发手记 frontmatter 的 `links`，
- * 反向链接（哪些手记指向某个阶段）由这里算出来，不手写。
+ * 知识网络：阶段之间的连接。连接只来自已发讲义 frontmatter 的 `links`，
+ * 反向链接（哪些讲义指向某个阶段）由这里算出来，不手写。
  */
 import type { CollectionEntry } from "astro:content";
 
@@ -22,7 +22,10 @@ export const edgesOf = (notes: CollectionEntry<"notes">[]): Edge[] =>
     return from ? n.data.links.map((l) => ({ from, to: l.to, why: l.why })) : [];
   });
 
-/** 已写的阶段链到手记，没写的链到学习路线上那一格——那是待写信号。 */
+/** 已写的阶段链到讲义，没写的链到学习路线上那一格——那是待写信号。 */
+/** 主线上的一步：涉及的阶段全部发了讲义才算核对过。 */
+export const stepChecked = (stages: string[]) => stages.every((no) => stageRef(no).written);
+
 export function stageRef(no: string) {
   const s = stages.get(no);
   if (!s) throw new Error(`不存在的阶段编号 ${no}`);

@@ -29,7 +29,8 @@ const { Content } = await render(note);
         {note.data.date.toISOString().slice(0, 10)}
       </time>
       {` · ${note.data.layer}`}
-      {note.data.stage ? ` · 阶段 ${note.data.stage}` : ""}
+      {note.data.stage ? ` · 第 ${Number(note.data.stage)} 讲` : ""}
+      {" · AI 撰写 · 对照源码"}
     </p>
     <h1 class="display">{note.data.title}</h1>
     <p class="lede">{note.data.summary}</p>
@@ -37,7 +38,7 @@ const { Content } = await render(note);
 
   <div class="shell">
     <article class="prose">
-      <!-- 手记里直接写 <Diagram name="..." /> 或 <Sketch slug="..." /> 即可内嵌架构图、图解，不必自己 import。 -->
+      <!-- 讲义里直接写 <Diagram name="..." /> 或 <Sketch slug="..." /> 即可内嵌架构图、图解，不必自己 import。 -->
       <Content components={{ Diagram, Sketch }} />
 
       {

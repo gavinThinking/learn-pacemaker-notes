@@ -180,7 +180,7 @@ kbd {
   }
   .nav {
     flex: 1;
-    /* 必须 flex-start：溢出时向右裁切，第一项「学习路线」才不会被藏到字标底下。 */
+    /* 必须 flex-start：溢出时向右裁切，第一项「讲义」才不会被藏到字标底下。 */
     justify-content: flex-start;
     flex-wrap: nowrap;
     gap: 1rem;
@@ -197,6 +197,7 @@ kbd {
     white-space: nowrap;
   }
 }
+
 
 .footer {
   margin-top: 6rem;
@@ -923,7 +924,7 @@ a.card:hover {
     /*
       顶栏是 88% 半透明 + backdrop-blur，实色渐隐会盖出一块更亮的补丁。
       这里改用 mask 淡出内容本身——它不挑背景色，半透明和模糊都不影响。
-      窄屏下导航必定溢出，所以这个淡出是常驻提示，不需要判断滚动位置。
+      更窄的屏幕上导航会溢出，这个淡出是常驻提示，不需要判断滚动位置。
     */
     mask-image: linear-gradient(
       to right,
@@ -937,6 +938,20 @@ a.card:hover {
 
   .nav::-webkit-scrollbar {
     display: none;
+  }
+}
+
+/* 常见手机宽度（390px）下五个导航项不用横划就能放下，淡出只落在右侧留白上。 */
+@media (max-width: 420px) {
+  .topbar__inner {
+    gap: 0.6rem;
+  }
+  .brand__name {
+    font-size: 0.88rem;
+  }
+  .nav {
+    gap: 0.6rem;
+    font-size: 0.78rem;
   }
 }
 

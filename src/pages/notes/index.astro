@@ -8,9 +8,9 @@ const notes = (await getCollection("notes")).sort(
 );
 ---
 
-<Base title="手记" description="学 Pacemaker 的手记：每篇讲清一个阶段，引用固定版本的上游文档和源码。">
+<Base title="讲义" description="学 Pacemaker 的讲义：每篇讲清一个阶段，引用固定版本的上游文档和源码。">
   <div class="shell page-head">
-    <p class="eyebrow">手记</p>
+    <p class="eyebrow">讲义</p>
     <h1 class="display">一次一个阶段</h1>
     <p class="lede">
       每篇对应<a href="/roadmap/">学习路线</a>上的一个阶段，引用 Pacemaker-2.1.11 的文档或源码；
@@ -21,7 +21,7 @@ const notes = (await getCollection("notes")).sort(
   <div class="shell">
     {
       notes.length === 0 ? (
-        <p class="lede" style="padding-block:3rem">还没有手记。</p>
+        <p class="lede" style="padding-block:3rem">还没有讲义。</p>
       ) : (
         <ul class="note-list">
           {notes.map((note) => (
@@ -31,7 +31,7 @@ const notes = (await getCollection("notes")).sort(
                   {note.data.date.toISOString().slice(0, 10)}
                 </time>
                 {` · ${note.data.layer}`}
-                {note.data.stage ? ` · 阶段 ${note.data.stage}` : ""}
+                {note.data.stage ? ` · 第 ${Number(note.data.stage)} 讲` : ""}
               </p>
               <h2>
                 <a href={`/notes/${note.id}/`}>{note.data.title}</a>

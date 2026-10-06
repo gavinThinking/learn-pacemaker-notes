@@ -1,4 +1,6 @@
 ---
+import Diagram from "../components/Diagram.astro";
+import Sketch from "../components/Sketch.astro";
 import SketchGrid from "../components/SketchGrid.astro";
 import Base from "../layouts/Base.astro";
 import { layers, progress, statusLabels, statusOf } from "../data/roadmap";
@@ -7,17 +9,71 @@ import { sketches } from "../data/sketches";
 ---
 
 <Base
-  title="学习路线"
-  description="按 Pacemaker 自己的分工拆出的 6 层 14 个阶段，以及每个阶段的手记。"
+  title="路线"
+  description="Pacemaker 2.1 的守护进程各管什么，以及按它自己的分工拆出的 6 层 14 讲。"
 >
   <div class="shell page-head">
-    <p class="eyebrow">6 层 · 对照 Pacemaker {site.upstream.version}</p>
-    <h1 class="display">学到哪了，一页说清</h1>
+    <p class="eyebrow">路线 · 对照 Pacemaker {site.upstream.version}</p>
+    <h1 class="display">先看全景，再一层层拆</h1>
     <p class="lede">
-      从下往上排：成员与 quorum 是地基，调度决策是核心，fencing 是安全底线，最后用在 PostgreSQL 主备上。
-      每个阶段只看一样产出：手记发了没有。只是读过资料不算产出；在实验平台上验证过的会另外标出来，不影响状态。
+      上半页是全景：Pacemaker 由哪些守护进程组成，谁做决定、谁动手。下半页是 6 层 14 讲，
+      一个阶段对应一讲，从下往上排：成员与 quorum 是地基，调度决策是核心，fencing 是安全底线，最后用在 PostgreSQL 主备上。
+    </p>
+  </div>
+
+  <div class="shell section" id="overview">
+    <h2 class="section__title">全景：谁在做决定，谁在动手</h2>
+    <p class="lede">
+      Pacemaker 2.1 在每个节点上跑同一组守护进程，由 <code>pacemakerd</code> 拉起并看护。
+      所有节点里选出一个 <code>pacemaker-controld</code> 当 DC（Designated Controller），
+      只有它做调度决定，其余节点照它的指令执行。成员关系和 quorum 不归 Pacemaker 管，交给下面的 Corosync。
     </p>
 
+    <Diagram
+      name="daemons"
+      verified="docs"
+      rev="1"
+      gaps={[
+        "哪些守护进程直接用 Corosync 的进程组通信、哪些经 CIB 间接同步，还没对照源码核对",
+        "每个节点都跑全套守护进程，图里只画了 DC 所在节点和动作落到的节点两侧会用到的那几个",
+        "pacemaker-schedulerd 在非 DC 节点上是否常驻，还没核对",
+        "fencing 拓扑（多级 fence 设备）没有画",
+      ]}
+      caption="依据：Pacemaker Explained 2.1 §1.2.2「Pacemaker Architecture」。守护进程目录在上游 Pacemaker-2.1.11 tag 的 daemons/ 下。"
+    />
+
+    <Sketch slug="state-decision-action" label="直觉版" />
+
+    <article class="prose">
+      <h3>守护进程对照</h3>
+      <div class="table-scroll">
+        <table>
+          <thead>
+            <tr><th>守护进程</th><th>管什么</th><th>1.x 时的名字</th><th>源码目录</th></tr>
+          </thead>
+          <tbody>
+            <tr><td><code>pacemakerd</code></td><td>拉起其余守护进程，挂了就重启</td><td><code>pacemakerd</code></td><td><a href={`${site.upstream.href}/daemons/pacemakerd`}>daemons/pacemakerd</a></td></tr>
+            <tr><td><code>pacemaker-based</code></td><td>CIB：集群配置和当前状态，同步到所有节点</td><td><code>cib</code></td><td><a href={`${site.upstream.href}/daemons/based`}>daemons/based</a></td></tr>
+            <tr><td><code>pacemaker-attrd</code></td><td>节点属性，写进 CIB 供调度使用</td><td><code>attrd</code></td><td><a href={`${site.upstream.href}/daemons/attrd`}>daemons/attrd</a></td></tr>
+            <tr><td><code>pacemaker-schedulerd</code></td><td>拿 CIB 快照算出该做哪些动作</td><td><code>pengine</code></td><td><a href={`${site.upstream.href}/daemons/schedulerd`}>daemons/schedulerd</a></td></tr>
+            <tr><td><code>pacemaker-controld</code></td><td>协调者；选出的那个是 DC</td><td><code>crmd</code></td><td><a href={`${site.upstream.href}/daemons/controld`}>daemons/controld</a></td></tr>
+            <tr><td><code>pacemaker-execd</code></td><td>在本节点调用资源代理</td><td><code>lrmd</code></td><td><a href={`${site.upstream.href}/daemons/execd`}>daemons/execd</a></td></tr>
+            <tr><td><code>pacemaker-fenced</code></td><td>执行 fencing，把失联节点强制隔离</td><td><code>stonithd</code></td><td><a href={`${site.upstream.href}/daemons/fenced`}>daemons/fenced</a></td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>
+        图的证据等级是「仅依据文档」。等对应阶段读到源码，会把每条边对照
+        Pacemaker-2.1.11 核对一遍，再升到「已对照源码」并更新修订号。
+      </p>
+    </article>
+  </div>
+
+  <div class="shell section" id="stages">
+    <h2 class="section__title">6 层 14 讲</h2>
+    <p class="lede">
+      每一讲只看一样产出：讲义发了没有。只是读过资料不算产出；在实验平台上验证过的会另外标出来，不影响状态。
+    </p>
     <div class="progress-bar" aria-hidden="true">
       {
         layers
@@ -26,7 +82,7 @@ import { sketches } from "../data/sketches";
       }
     </div>
     <p class="note-meta">
-      {progress.total} 个阶段 · 手记 {progress.notes} 篇 · 平台验证 {progress.evidence} 项
+      {progress.total} 讲 · 已发 {progress.notes} 讲 · 平台验证 {progress.evidence} 项
     </p>
   </div>
 
@@ -57,7 +113,7 @@ import { sketches } from "../data/sketches";
                     {stage.upstream && (
                       <a href={`${site.upstream.href}/${stage.upstream}`}>上游 · {stage.upstream}</a>
                     )}
-                    {stage.note && <a href={`/notes/${stage.note}/`}>读手记 →</a>}
+                    {stage.note && <a href={`/notes/${stage.note}/`}>读第 {Number(stage.no)} 讲 →</a>}
                   </p>
                 )}
               </div>
@@ -82,14 +138,14 @@ import { sketches } from "../data/sketches";
     <h2 class="section__title">状态怎么定</h2>
     <div class="cards">
       <article class="card">
-        <span class="card__no">手记已发</span>
-        <h3>这个阶段的手记发布了</h3>
-        <p>手记讲清这个阶段的机制，源码结论链到 2.1.11 tag，没核对源码的标明只依据文档。</p>
+        <span class="card__no">讲义已发</span>
+        <h3>这一讲发布了</h3>
+        <p>讲清这个阶段的机制，源码结论链到 2.1.11 tag，没核对源码的标明只依据文档。</p>
       </article>
       <article class="card">
         <span class="card__no">未开始</span>
-        <h3>还没有手记</h3>
-        <p>读过资料但没写成手记，也算未开始。</p>
+        <h3>还没有讲义</h3>
+        <p>读过资料但没写成讲义，也算未开始。</p>
       </article>
       <article class="card">
         <span class="card__no">平台验证</span>
