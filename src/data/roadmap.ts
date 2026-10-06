@@ -154,6 +154,7 @@ export const layers: Layer[] = [
         no: "14",
         title: "PAF：把 PostgreSQL 做成 promotable 资源",
         summary: "主库怎么选、切换时怎么保证不丢已确认的数据、旧主怎么重新加入。",
+        note: "14-paf",
       },
     ],
   },

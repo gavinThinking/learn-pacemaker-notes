@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PAF 从打分到提升：分数只是提示，promote 时再比一次</title>
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400&family=Inter:wght@400;600&display=swap" rel="stylesheet">
+  <style>
+    /* 和 src/styles/tokens.css 同一套令牌；嵌进站点后 SVG 直接用站点的变量。 */
+    :root {
+      --paper: #fdfcf9; --paper-raised: #ffffff; --paper-muted: #f6f3ec; --ink: #22201b; --ink-muted: #6a6459;
+      --ink-subtle: #7a7365; --line: #e7e1d5; --brand: #2f5fd0; --brand-light: #eef2fb;
+      --font-display: Fraunces, "Songti SC", "Noto Serif SC", Georgia, serif;
+      --font-body: Inter, -apple-system, BlinkMacSystemFont, "PingFang SC", "Noto Sans SC", sans-serif;
+      --font-mono: ui-monospace, SFMono-Regular, Consolas, monospace;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --paper: #16150f; --paper-raised: #1f1e17; --paper-muted: #1d1c15; --ink: #f2efe6; --ink-muted: #b3ac9c;
+        --ink-subtle: #8b8474; --line: #34322a; --brand: #8fabf0; --brand-light: #1c2237;
+      }
+    }
+    body { margin: 0; padding: 3rem 1rem; background: var(--paper-raised); color: var(--ink); font-family: var(--font-body); }
+    .frame { max-width: 640px; margin: 0 auto; }
+    .eyebrow { font: 500 0.66rem var(--font-mono); letter-spacing: 0.18em; text-transform: uppercase; color: var(--ink-subtle); margin: 0 0 0.5rem; }
+    h1 { font: 400 1.75rem/1.2 var(--font-display); margin: 0 0 1.5rem; }
+    .canvas { overflow-x: auto; }
+  </style>
+</head>
+<body>
+<main class="frame">
+  <p class="eyebrow">Flowchart · 阶段 14</p>
+  <h1>PAF 从打分到提升：分数只是提示，promote 时再比一次</h1>
+  <div class="canvas">
+<svg id="paf" viewBox="0 0 640 480" style="min-width: 560px" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="paf-title paf-desc">
+  <title id="paf-title">PAF 从打分到提升：分数只是提示，promote 时再比一次</title>
+  <desc id="paf-desc">平时主库上的 PAF 在每次 monitor 里查 pg_stat_replication，替所有节点写 promotion score：自己 1001，连着的备库 1000、990 等，没连上的 -1000，用 crm_master --lifetime forever 写进 CIB 的 nodes 段。需要提升时，调度器挑分数最高的备库，在 transition 里排 pre-promote 通知、promote、post-promote 通知。pre-promote 通知里每个备库把自己的时间线和最后收到的 WAL 位置写成私有属性 lsn_location。被选中的备库在 promote 里逐个比较：有别的备库更新，就把自己的分数改成 1、对方改成 1000，返回失败让调度器重算；自己最新，就执行 pg_ctl promote，等 monitor 返回 8。post-promote 通知删掉这些私有属性。</desc>
+  <defs>
+    <style>
+      #paf {
+        --paf-paper: var(--paper-raised, #ffffff);
+        --paf-node: var(--paper, #fdfcf9);
+        --paf-paper-2: var(--paper-muted, #f6f3ec);
+        --paf-ink: var(--ink, #22201b);
+        --paf-muted: var(--ink-muted, #6a6459);
+        --paf-soft: var(--ink-subtle, #7a7365);
+        --paf-rule: var(--line, #e7e1d5);
+        --paf-accent: var(--brand, #2f5fd0);
+        --paf-tint: var(--brand-light, #eef2fb);
+        --paf-sans: var(--font-body, "Inter Variable", Inter, -apple-system, "PingFang SC", "Noto Sans SC", sans-serif);
+        --paf-mono: var(--font-mono, ui-monospace, SFMono-Regular, Consolas, monospace);
+      }
+      #paf .paf-bg { fill: var(--paf-paper); }
+      #paf .paf-band { fill: var(--paf-paper-2); }
+      #paf .paf-step { fill: var(--paf-node); stroke: var(--paf-ink); stroke-width: 1; }
+      #paf .paf-end { fill: color-mix(in srgb, var(--paf-ink) 3%, var(--paf-node)); stroke: color-mix(in srgb, var(--paf-ink) 30%, transparent); stroke-width: 1; }
+      #paf .paf-focal { fill: var(--paf-tint); stroke: var(--paf-accent); stroke-width: 1.2; }
+      #paf .paf-arrow { fill: none; stroke: var(--paf-muted); stroke-width: 1.2; }
+      #paf .paf-dashed { stroke-dasharray: 5 4; }
+      #paf .paf-head { fill: var(--paf-muted); }
+      #paf .paf-mask { fill: var(--paf-paper); }
+      #paf .paf-name { font: 600 12px var(--paf-sans); fill: var(--paf-ink); }
+      #paf .paf-sub { font: 400 10px var(--paf-sans); fill: var(--paf-muted); }
+      #paf .paf-mono { font: 400 9px var(--paf-mono); fill: var(--paf-muted); }
+      #paf .paf-tag { font: 600 9px var(--paf-mono); fill: var(--paf-soft); letter-spacing: 0.08em; }
+      #paf .paf-label { font: 400 10px var(--paf-sans); fill: var(--paf-muted); }
+      #paf .paf-rule { stroke: var(--paf-rule); stroke-width: 0.8; }
+    </style>
+    <marker id="paf-arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+      <polygon class="paf-head" points="0 0, 8 3, 0 6"/>
+    </marker>
+  </defs>
+
+  <rect class="paf-bg" width="640" height="480"/>
+
+  <!-- 连线 -->
+  <path class="paf-arrow" d="M184 72 H240" marker-end="url(#paf-arrow)"/>
+  <path class="paf-arrow" d="M400 72 H456" marker-end="url(#paf-arrow)"/>
+  <path class="paf-arrow" d="M536 104 V176" marker-end="url(#paf-arrow)"/>
+  <path class="paf-arrow" d="M456 208 H400" marker-end="url(#paf-arrow)"/>
+  <path class="paf-arrow paf-dashed" d="M240 208 H184" marker-end="url(#paf-arrow)"/>
+  <path class="paf-arrow" d="M320 240 V312" marker-end="url(#paf-arrow)"/>
+  <path class="paf-arrow" d="M400 344 H456" marker-end="url(#paf-arrow)"/>
+
+  <rect class="paf-mask" x="192" y="54" width="40" height="12" rx="2"/>
+  <text class="paf-label" x="212" y="64" text-anchor="middle">永久属性</text>
+  <rect class="paf-mask" x="410" y="54" width="36" height="12" rx="2"/>
+  <text class="paf-label" x="428" y="64" text-anchor="middle">读分数</text>
+  <rect class="paf-mask" x="544" y="134" width="40" height="12" rx="2"/>
+  <text class="paf-label" x="546" y="144">各备库都收</text>
+  <rect class="paf-mask" x="408" y="184" width="40" height="12" rx="2"/>
+  <text class="paf-label" x="428" y="194" text-anchor="middle">私有属性</text>
+  <rect class="paf-mask" x="190" y="184" width="44" height="12" rx="2"/>
+  <text class="paf-label" x="212" y="194" text-anchor="middle">别人更新</text>
+  <rect class="paf-mask" x="328" y="270" width="36" height="12" rx="2"/>
+  <text class="paf-label" x="330" y="280">我最新</text>
+  <rect class="paf-mask" x="410" y="320" width="36" height="12" rx="2"/>
+  <text class="paf-label" x="428" y="330" text-anchor="middle">成功后</text>
+
+  <!-- 第一行：平时 -->
+  <rect class="paf-step" x="24" y="40" width="160" height="64" rx="6"/>
+  <text class="paf-name" x="104" y="62" text-anchor="middle">主库 monitor 打分</text>
+  <text class="paf-mono" x="104" y="78" text-anchor="middle">_check_locations</text>
+  <text class="paf-sub" x="104" y="94" text-anchor="middle">每 15 秒，替所有节点写</text>
+
+  <rect class="paf-step" x="240" y="40" width="160" height="64" rx="6"/>
+  <text class="paf-name" x="320" y="62" text-anchor="middle">CIB 的 nodes 段</text>
+  <text class="paf-mono" x="320" y="78" text-anchor="middle">master-pgsqld</text>
+  <text class="paf-sub" x="320" y="94" text-anchor="middle">主 1001，备 1000，断开 -1000</text>
+
+  <rect class="paf-step" x="456" y="40" width="160" height="64" rx="6"/>
+  <text class="paf-name" x="536" y="62" text-anchor="middle">调度器选提升目标</text>
+  <text class="paf-mono" x="536" y="78" text-anchor="middle">promotion score</text>
+  <text class="paf-sub" x="536" y="94" text-anchor="middle">分数最高的备库</text>
+
+  <!-- 第二行：promote 之前 -->
+  <rect class="paf-step" x="456" y="176" width="160" height="64" rx="6"/>
+  <text class="paf-name" x="536" y="198" text-anchor="middle">各备库报位置</text>
+  <text class="paf-mono" x="536" y="214" text-anchor="middle">notify pre-promote</text>
+  <text class="paf-sub" x="536" y="230" text-anchor="middle">写 lsn_location = 时间线#LSN</text>
+
+  <rect class="paf-focal" x="240" y="176" width="160" height="64" rx="6"/>
+  <text class="paf-name" x="320" y="198" text-anchor="middle">promote 先比位置</text>
+  <text class="paf-mono" x="320" y="214" text-anchor="middle">TL#LSN</text>
+  <text class="paf-sub" x="320" y="230" text-anchor="middle">和名单里每个备库比</text>
+
+  <rect class="paf-step" x="24" y="176" width="160" height="64" rx="6"/>
+  <text class="paf-name" x="104" y="198" text-anchor="middle">让位</text>
+  <text class="paf-mono" x="104" y="214" text-anchor="middle">自己 1，对方 1000</text>
+  <text class="paf-sub" x="104" y="230" text-anchor="middle">返回失败，调度器重算</text>
+
+  <!-- 第三行：提升 -->
+  <rect class="paf-step" x="240" y="312" width="160" height="64" rx="6"/>
+  <text class="paf-name" x="320" y="334" text-anchor="middle">提升本机</text>
+  <text class="paf-mono" x="320" y="350" text-anchor="middle">pg_ctl promote</text>
+  <text class="paf-sub" x="320" y="366" text-anchor="middle">等 monitor 返回 8</text>
+
+  <rect class="paf-step" x="456" y="312" width="160" height="64" rx="6"/>
+  <text class="paf-name" x="536" y="334" text-anchor="middle">收尾</text>
+  <text class="paf-mono" x="536" y="350" text-anchor="middle">notify post-promote</text>
+  <text class="paf-sub" x="536" y="366" text-anchor="middle">删掉这几个私有属性</text>
+
+  <!-- 图例 -->
+  <line class="paf-rule" x1="24" y1="440" x2="616" y2="440"/>
+  <rect class="paf-focal" x="24" y="452" width="24" height="12" rx="2"/>
+  <text class="paf-label" x="54" y="462">重点：真正挑出最新备库的是 promote 里这次比较，分数只是提示</text>
+</svg>
+  </div>
+</main>
+</body>
+</html>

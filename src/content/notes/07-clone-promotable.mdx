@@ -19,7 +19,7 @@ links:
   - to: "06"
     why: 实例分配用的是第 6 讲那张分数表；clone 不设 stickiness 时默认 1，就是为了让实例别无故换节点。
   - to: "04"
-    why: promotion score 就是一个节点属性（master-<资源名>），资源代理用 crm_attribute --promotion 经 attrd 写进 status 段。
+    why: promotion score 就是一个节点属性（master-<资源名>），常见做法是资源代理用 crm_attribute --promotion 经 attrd 写进 status 段；PAF 则写成永久属性，放在 nodes 段（第 14 讲）。
   - to: "05"
     why: 让 VIP 跟着主库走，靠的是 with-rsc-role=Promoted 的 colocation；这类 colocation 在选主时也会反过来影响谁当主。
   - to: "10"
@@ -29,7 +29,7 @@ links:
   - to: "08"
     why: crm_simulate -s 打印的 promotion score 那几行，就是本篇选主第 ⑤ 步看到的数；第 8 讲用回归用例离线重放。
   - to: "14"
-    why: PAF 的资源代理在每次 monitor 里按 WAL 位置给备库写 promotion score，主库切换时谁的数据最新谁就排第一。
+    why: 主库上的资源代理在每次 monitor 里按复制进度给各备库写 promotion score；真正提升前，PAF 还会在 pre-promote 通知里比一次各备库的 WAL 位置，不是最新的就让位。
 ---
 
 前两讲讲的调度都针对单个资源：一个资源，选一个节点。很多服务需要在多个节点上同时跑：每个节点都要挂载的文件系统、每个节点都要跑的监控代理，还有本系列的主角——一主多备的 PostgreSQL。Pacemaker 用 clone 表达「同一份定义跑多个实例」，用 promotable clone 表达「多个实例里选出一部分当主」。
@@ -188,7 +188,7 @@ Transition Summary 是：
 
 1. node1 不可用，它上面的实例不会运行（等 fencing 确认后才算停下，第 12 讲）；
 2. node2 上的实例照常分配在 node2；
-3. 第 ③ 步：node2 上的 `master-pgsqld` 由 PAF 的资源代理平时在 monitor 里写好，是正数，优先级就是它；node1 的那份临时属性在它离开集群时已经被清掉；
+3. 第 ③ 步：node2 上的 `master-pgsqld` 是 1000，由 node1 上的主库实例平时在 monitor 里替 node2 写好，是永久属性（第 14 讲）；node1 自己那份 1001 也还在，但 node1 不在线，它上面没有可选的实例，这个值用不上；
 4. 第 ⑤ 步：两节点、`promoted-max=1`，node2 上的实例排第一，没有跳过的条件（配了 two_node 时这一侧保有 quorum，第 2 讲），被选中提升；
 5. VIP 的 colocation 跟着 Promoted 走，order 让它等 promote 完成再启动。
 

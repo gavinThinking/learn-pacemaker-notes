@@ -1,0 +1,254 @@
+---
+title: PAF：把 PostgreSQL 做成 promotable 资源
+date: 2026-10-06
+summary: PAF 是一个 OCF 资源代理，把 PostgreSQL 流复制的一主多备配成 promotable clone。谁该当主由主库决定：主库每次 monitor 查一遍复制状态，替所有节点写 promotion score（自己 1001，连着的备库 1000、990……，没连上的 -1000），用的是永久属性。分数只是提示：真正提升前，所有备库在 pre-promote 通知里报出自己收到的 WAL 位置，被选中的那台逐个比较，不是最新的就把机会让给最新的那台，返回失败让调度器重算。计划内切换还要确认新主收到了旧主关机时写的最后一条检查点记录；故障切换在异步复制下可能丢掉旧主上已提交的事务，旧主库也不会自动重新加入，要人工重建成备库。
+layer: L6
+stage: "14"
+upstream:
+  - label: PAF v2.3.0 script/pgsqlms：主库替各节点打分（_check_locations）
+    href: https://github.com/ClusterLabs/PAF/blob/v2.3.0/script/pgsqlms#L723-L818
+  - label: PAF v2.3.0 script/pgsqlms：按复制进度排名的那条 SQL（_get_lag_scores）
+    href: https://github.com/ClusterLabs/PAF/blob/v2.3.0/script/pgsqlms#L213-L270
+  - label: PAF v2.3.0 script/pgsqlms：pre-promote 通知里各备库报位置
+    href: https://github.com/ClusterLabs/PAF/blob/v2.3.0/script/pgsqlms#L1978-L2078
+  - label: PAF v2.3.0 script/pgsqlms：promote 前比较位置、让位
+    href: https://github.com/ClusterLabs/PAF/blob/v2.3.0/script/pgsqlms#L1786-L1975
+  - label: PAF v2.3.0 script/pgsqlms：计划内切换检查关机检查点（_check_switchover）
+    href: https://github.com/ClusterLabs/PAF/blob/v2.3.0/script/pgsqlms#L829-L887
+  - label: tools/crm_attribute.c：--lifetime forever 写到 nodes 段、不经 attrd
+    href: https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/tools/crm_attribute.c#L637-L672
+links:
+  - to: "04"
+    why: PAF 的 promotion score 用 crm_master --lifetime forever 写，是永久属性，直接进 CIB 的 nodes 段、不经 attrd，节点离开也不删；比较 WAL 位置用的 lsn_location 才是 attrd 的私有属性，只在内存里，不进 CIB。
+  - to: "07"
+    why: PAF 要求配成 promoted-max=1、notify=true 的 promotable clone；调度器选主时读的 master-pgsqld 就是 PAF 写的分数，pre-promote、post-promote 就是第 7 讲那组 notify 动作。
+  - to: "10"
+    why: PAF 严格按 OCF 返回码说话：主库 monitor 返回 8，备库返回 0，干净停下返回 7，崩溃后还停着的主库返回 9；start 一律以备库身份启动，主库只能经 promote 产生。
+  - to: "11"
+    why: promote 发现别的备库更新时故意返回失败，借第 11 讲的失败处理让调度器带着新分数重算；主库 monitor 失败、在原地恢复时，PAF 认出这是同一台的恢复，跳过比较。
+  - to: "12"
+    why: PAF 在故障切换时不去确认旧主库真的停了，它依赖调度器只在 fencing 成功之后才排 promote；被 fencing 的旧主库节点重启后，它上面的实例 probe 返回 9，不能自己重新加入。
+  - to: "13"
+    why: PAF 自己不看 quorum：没有 quorum 的一侧调度器不排 promote，也就不会调用 PAF 的 promote；no-quorum-policy=demote 时调用的是 PAF 的 demote，把主库快速关机后以备库身份重启。
+  - to: "05"
+    why: PAF 只管 PostgreSQL 本身，客户端连的 VIP 是另一个资源，靠第 5 讲的 colocation 跟着主角色走、靠 order 等 promote 完成再启动。
+  - to: "06"
+    why: 旧主库重建后作为备库重新加入时，它名下那份 1001 的永久分数还在，主角色会不会被挪回去，取决于分数和 stickiness 怎么比。
+---
+
+前 13 讲把 Pacemaker 从成员、quorum 一路讲到 fencing，每讲的「回到主线」都停在同一个问题前：node2 上的备库凭什么被提升、提升时数据够不够新。这个问题 Pacemaker 自己回答不了——它不懂 PostgreSQL 的复制。回答它的是资源代理。本篇读 PAF（PostgreSQL Automatic Failover）的源码，看它怎样把 PostgreSQL 的复制状态翻译成调度器能读的分数，又怎样在提升前补上分数照顾不到的那段时间差。
+
+本篇的版本：PAF v2.3.0（2020 年 3 月发布，到现在仍是最新的正式版），资源代理是一个 2337 行的 Perl 脚本 `script/pgsqlms`；Pacemaker 2.1.11。PAF 的源码链接都指向 v2.3.0 tag，只依据文档的会单独说明。
+
+几个 PostgreSQL 的词先说清楚：
+
+<div class="table-scroll">
+
+| 词 | 意思 |
+| --- | --- |
+| WAL | 预写日志。PostgreSQL 先把每个改动写进这份日志，再改数据文件；备库靠不断接收主库的 WAL 跟上主库 |
+| LSN | WAL 里的位置，一个只增不减的字节偏移。两个备库谁的 LSN 大，谁收到的数据多 |
+| 时间线（timeline，TL） | 每提升一次主库，时间线加 1。时间线更大的一方经历过更近的一次提升，比 LSN 之前先比它 |
+| 流复制 | 备库开一条连接从主库实时拉 WAL；主库在 `pg_stat_replication` 视图里每个备库一行，能看到它收到了哪 |
+| `pg_controldata` | 读数据目录里的控制文件，其中 `state` 一行记着实例上次处于什么状态：在当主库、在当备库、干净关机了 |
+
+</div>
+
+## 一句话
+
+<div class="table-scroll">
+
+| 问题 | PAF 的做法 | 在哪 |
+| --- | --- | --- |
+| 谁该当主 | 主库每次 monitor（默认 15 秒一次）按复制进度替所有节点写分数：自己 1001，连着的备库 1000、990……，没连上的 -1000 | `_check_locations` |
+| 分数是十几秒前算的，会不会过时 | 会。提升前所有备库再报一次当前 WAL 位置，被选中的那台逐个比较，不是最新的就让位 | pre-promote 通知 + `pgsql_promote` |
+| 计划内切换会不会丢数据 | 不会：新主必须确认收到了旧主关机时写的最后一条检查点记录，否则取消切换 | `_check_switchover` |
+| 故障切换会不会丢数据 | 异步复制下会，丢的是旧主已提交、还没传到任何备库的事务；PAF 只能挑出剩下的里最新的那台 | 只依据文档 |
+| 旧主库怎么回来 | 不会自己回来：probe 发现它是崩溃的主库，返回 9；要人工重建成备库 | `_confirm_stopped` + 文档 |
+
+</div>
+
+## PAF 管哪些事
+
+PAF 只管 PostgreSQL 实例本身。客户端连的 VIP 是另一个资源（通常是 `IPaddr2`），靠 colocation 跟着主角色、靠 order 等 promote 完成再启动（第 5 讲）。
+
+它对配置有两条硬要求，`validate-all` 里检查，不满足直接返回「没装好」（`OCF_ERR_INSTALLED`）拒绝运行：clone 的 meta 要有 `notify=true`，`promoted-max`（旧名 `master-max`）必须是 1（[第 1303–1323 行](https://github.com/ClusterLabs/PAF/blob/v2.3.0/script/pgsqlms#L1303-L1323)）。PostgreSQL 一侧还有一条容易漏的：每个备库连主库时的 `application_name` 必须等于它的 Pacemaker 节点名。主库打分时拿 `pg_stat_replication` 里的 `application_name` 去对节点名，对不上的行直接跳过，日志 `Ignoring unknown application_name/node`（[第 746–750 行](https://github.com/ClusterLabs/PAF/blob/v2.3.0/script/pgsqlms#L746-L750)），那个备库就永远是 -1000。
+
+各个动作做什么：
+
+<div class="table-scroll">
+
+| 动作 | 做什么 | 源码 |
+| --- | --- | --- |
+| start | 不管上次是什么角色，一律写好 `standby.signal`（PostgreSQL 12 以前是 `recovery.conf`），以备库身份启动，等 monitor 返回 0 | [第 1439–1510 行](https://github.com/ClusterLabs/PAF/blob/v2.3.0/script/pgsqlms#L1439-L1510) |
+| stop | `pg_ctl -m fast stop`，超时设成 Pacemaker 给的超时再加 60 秒，保证先放弃的是 Pacemaker | [第 1513–1559 行](https://github.com/ClusterLabs/PAF/blob/v2.3.0/script/pgsqlms#L1513-L1559) |
+| monitor | `pg_isready` 看在不在听，在听就查 `pg_is_in_recovery()` 分主备；主库顺带给各节点打分 | [第 1563–1686 行](https://github.com/ClusterLabs/PAF/blob/v2.3.0/script/pgsqlms#L1563-L1686) |
+| promote | 先比较各备库的 WAL 位置，自己最新才 `pg_ctl -w promote`，再等 monitor 返回 8 | [第 1786–1975 行](https://github.com/ClusterLabs/PAF/blob/v2.3.0/script/pgsqlms#L1786-L1975) |
+| demote | PostgreSQL 不能在线把主库降成备库，所以先 `pg_ctl -m fast stop` 干净关机，再调用 start 以备库身份起来 | [第 1688–1782 行](https://github.com/ClusterLabs/PAF/blob/v2.3.0/script/pgsqlms#L1688-L1782) |
+| notify | 只处理四种：pre-promote、post-promote、pre-demote、pre-stop，其余直接返回成功 | [第 2181–2199 行](https://github.com/ClusterLabs/PAF/blob/v2.3.0/script/pgsqlms#L2181-L2199) |
+
+</div>
+
+monitor 的返回值就是第 10 讲那套 OCF 约定，PAF 在实例停着的时候还多做一步：用 `pg_controldata` 区分「干净关机」和「崩溃」。
+
+<div class="table-scroll">
+
+| 实例的样子 | PAF 怎么判断 | 返回 |
+| --- | --- | --- |
+| 在跑、是主库 | `pg_isready` 通，`pg_is_in_recovery()` 为 false | 8（`OCF_RUNNING_MASTER`） |
+| 在跑、是备库 | `pg_is_in_recovery()` 为 true | 0 |
+| 停着，上次干净关机 | 控制文件 `state` 是 `shut down` 或 `shut down in recovery` | 7（没在跑） |
+| 停着，控制文件还写着在当主库 | `state` 是 `in production`：主库崩溃了，没来得及关机 | 9（`OCF_FAILED_MASTER`） |
+| 停着，控制文件还写着在当备库 | `state` 是 `in archive recovery`：备库崩溃了 | 1（一般错误；OCF 没有「失败的备库」这个返回码） |
+
+</div>
+
+判断主备在 [`_confirm_role`，第 891–940 行](https://github.com/ClusterLabs/PAF/blob/v2.3.0/script/pgsqlms#L891-L940)，停着时的判断在 [`_confirm_stopped`，第 944–1007 行](https://github.com/ClusterLabs/PAF/blob/v2.3.0/script/pgsqlms#L944-L1007) 和 [`_controldata_to_ocf`，第 668–707 行](https://github.com/ClusterLabs/PAF/blob/v2.3.0/script/pgsqlms#L668-L707)。
+
+## 分数怎么来的：主库替所有节点打分
+
+第 4 讲说过，常见的资源代理在自己的 monitor 里用 `crm_attribute --promotion` 写**自己这台**的分数。PAF 不这样做：只有主库知道每个备库收到了哪，所以分数全由主库写。monitor 发现本机是主库时调用 `_check_locations`（[第 911 行](https://github.com/ClusterLabs/PAF/blob/v2.3.0/script/pgsqlms#L911)），它查一遍 `pg_stat_replication`，再替每个节点写分数：
+
+<div class="table-scroll">
+
+| 节点 | 分数 | 条件 | 日志 |
+| --- | --- | --- | --- |
+| 主库自己 | 1001 | 每次都写（值没变就跳过） | — |
+| 连着、正常复制的备库 | 1000、990、980…… | 按排名，每往后一名少 10 | `Update score of "node2" from ... to 1000 because of a change in the replication lag` |
+| 落后超过 `maxlag` 字节的备库 | 上面那个数取负，例如 -1000 | 只在 `maxlag` 大于 0 时生效，默认 0 即不检查 | `... because replication lag (...) is higher than given maxlag (...)` |
+| 处在 `startup` 或 `backup` 状态的备库 | -1 | 刚连上还在追赶，或正在被 `pg_basebackup` 拷贝 | `Forbidding promotion on "node2" in state "startup"` |
+| 在集群里、却不在 `pg_stat_replication` 里的节点 | -1000 | 备库没连上主库 | `"node2" is not connected to the primary` |
+| 不在当前分区的节点 | 不动 | `crm_node --partition` 不列它 | — |
+
+</div>
+
+排名的 SQL 在 [`_get_lag_scores`，第 213–270 行](https://github.com/ClusterLabs/PAF/blob/v2.3.0/script/pgsqlms#L213-L270)：分数 = (1000 − (名次 − 1) × 10)，名次按备库的 `write_lsn` 和节点名排。写分数的循环在 [第 723–818 行](https://github.com/ClusterLabs/PAF/blob/v2.3.0/script/pgsqlms#L723-L818)；没有任何备库连着时记一条 `No secondary connected to the master`。
+
+为什么不直接拿 LSN 当分数：LSN 是字节偏移，动辄几十亿，而 Pacemaker 把大于 1,000,000 的分数都当 INFINITY，所有备库就分不出高低了。源码注释直说了这一点，也直说了这个分数「只是给 Pacemaker 的提示」，真正的把关在 promote 里（[第 709–719 行](https://github.com/ClusterLabs/PAF/blob/v2.3.0/script/pgsqlms#L709-L719)）。
+
+v2.3.0 里排名的方向是反的：SQL 按 `write_lsn` 升序编号，收到数据最少的备库拿到 1000（[第 238–243 行](https://github.com/ClusterLabs/PAF/blob/v2.3.0/script/pgsqlms#L238-L243)）。上游在 2021 年 9 月的提交 [78328c6](https://github.com/ClusterLabs/PAF/commit/78328c6cc1960e1fd3feeaec44c8c179af5b6920) 改成了降序，但这个提交之后还没有发过正式版。两种情况下它都不会造成提升错人：两节点集群只有一个备库，排名无从颠倒；多个备库时调度器可能先挑中落后的那台，但下一节的比较会让它让位，代价是多一轮失败和重算。
+
+### 分数是永久属性
+
+PAF 写分数用的是 `crm_master --lifetime forever`（[第 78 行](https://github.com/ClusterLabs/PAF/blob/v2.3.0/script/pgsqlms#L78)）。`crm_master` 只是 `crm_attribute -n master-<资源名>` 的包装（[`crm_master.in` 第 92 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/tools/crm_master.in#L92)），`--lifetime forever` 让 `crm_attribute` 把属性写进 CIB configuration 段的 `nodes` 里，并且不经过 attrd、直接改 CIB（[`crm_attribute.c` 第 637–672 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/tools/crm_attribute.c#L637-L672)）。所以这个分数和第 4 讲里那类临时属性不同：
+
+- 节点离开集群、被 fencing、重启，它的分数都还在。旧主库 node1 断电后，它名下的 1001 一直留在 CIB 里；node1 不在线，调度器不会在它上面放实例，这个值不起作用。
+- 不在当前分区的节点，主库不碰它的分数，所以 node1 回来之前，这个 1001 也不会被改写。
+
+`_set_master_score` 写完会每隔 0.1 秒读回来，读到新值才返回（[第 374–395 行](https://github.com/ClusterLabs/PAF/blob/v2.3.0/script/pgsqlms#L374-L395)）。
+
+### 集群第一次启动时谁当主
+
+第一次启动时还没有主库，也就没人打分，所有实例的分数都是缺省的 -1，调度器谁也不提升（第 7 讲）。PAF 在 start 里补了一条：以备库身份启动成功后，如果这个实例上次是**以主库身份**干净关机的（控制文件 `state` 是 `shut down`，不是 `shut down in recovery`），而且当前分区里没有任何节点的分数大于等于 0，就给自己写 1，日志 `No master score around. Set mine to 1`（[第 1478–1493 行](https://github.com/ClusterLabs/PAF/blob/v2.3.0/script/pgsqlms#L1478-L1493)）。于是上次的主库被提升，它的 monitor 再给其他节点打分。也可以由管理员用 `crm_master` 手工指定。
+
+## 提升前再比一次
+
+主库的分数最近一次是在它最后一次 monitor 时写的，离主库出事可能已经过了十几秒；这期间有的备库可能又多收了一些 WAL。所以被调度器选中的备库不急着提升，先和其他备库对一遍：
+
+<Diagram
+  name="paf-promote"
+  caption="PAF 从打分到提升。分数由主库平时写好，调度器据此选人；被选中的备库在 promote 里再和其他备库比一次 WAL 位置，不是最新的就让位。"
+  verified="source"
+  rev="1"
+  gaps={[
+    "没画计划内切换时的关机检查点检查，见下文「计划内切换」",
+    "没画主库在原地恢复时跳过比较的分支",
+  ]}
+/>
+
+1. **调度器排动作**。clone 开了 `notify=true`，调度器在 promote 前后各排一组通知，发给这个 clone 的所有实例（第 7 讲）：先 pre-promote，再 promote，再 post-promote。
+2. **pre-promote：每个备库报位置**（[第 1978–2078 行](https://github.com/ClusterLabs/PAF/blob/v2.3.0/script/pgsqlms#L1978-L2078)）。每个收到通知的备库先清掉上一次留下的私有属性，执行一次 `CHECKPOINT`，从控制文件读出当前时间线，再查自己最后收到的 WAL 位置，拼成「时间线#LSN」写进私有属性 `lsn_location`，日志 `Current node TL#LSN: ...`。私有属性用 `attrd_updater --private --lifetime reboot` 写（[第 81 行](https://github.com/ClusterLabs/PAF/blob/v2.3.0/script/pgsqlms#L81)），只在各节点 attrd 的内存里，永远不进 CIB（第 4 讲）。被选中的那台还要记下这次参与比较的节点名单 `nodes`：正在运行的实例，加上这次要启动的，减去这次要停的。
+3. **promote：逐个比较**（[第 1846–1948 行](https://github.com/ClusterLabs/PAF/blob/v2.3.0/script/pgsqlms#L1846-L1948)）。被选中的备库读出自己的 `lsn_location`，再对 `nodes` 名单里每个节点读它的 `lsn_location`——私有属性在节点间是异步传播的，读不到就每 0.1 秒重读一次，直到读到或 promote 超时。比较时先比时间线，时间线相同再比 LSN。
+4. **有人更新：让位**。把自己的分数改成 1、把最新那台改成 1000，日志 `<节点> is the best candidate to promote, aborting current promotion`，然后返回失败（[第 1932–1946 行](https://github.com/ClusterLabs/PAF/blob/v2.3.0/script/pgsqlms#L1932-L1946)）。失败按第 11 讲处理，调度器重算时读到新分数，改去 1000 的那台提升。
+5. **自己最新：提升**。执行 `pg_ctl -w promote`，然后每秒跑一次 monitor，等它返回 8，日志 `Promote complete`（[第 1953–1970 行](https://github.com/ClusterLabs/PAF/blob/v2.3.0/script/pgsqlms#L1953-L1970)）。PostgreSQL 的提升是异步的，`pg_ctl` 返回不代表已经能写，所以要等这一步。
+6. **post-promote：清理**。删掉 `lsn_location`、`nodes` 等几个私有属性（[第 2081–2091 行](https://github.com/ClusterLabs/PAF/blob/v2.3.0/script/pgsqlms#L2081-L2091)）。之后新主库的 monitor 开始给其他节点打分。
+
+有一种情况跳过比较：主库在原地恢复。第 11 讲讲过，主库 monitor 失败、还没到 `migration-threshold` 时，调度器在同一台上排 demote → stop → start → promote。PAF 在 pre-promote 里发现「要提升的节点就是现在的主库所在节点」，记一个 `recover_master`，日志 `This is a master recovery!`；promote 读到它就不比了，日志 `Recovering old master, no election needed`（[第 1990–1997 行](https://github.com/ClusterLabs/PAF/blob/v2.3.0/script/pgsqlms#L1990-L1997)，[第 1838–1843 行](https://github.com/ClusterLabs/PAF/blob/v2.3.0/script/pgsqlms#L1838-L1843)）。崩溃的主库此时 monitor 返回 9，demote 和 stop 都会失败，所以 PAF 在 pre-demote 通知里先试着 `pg_ctl start` 让它完成崩溃恢复，后面的 demote、stop 才能正常走（[第 2094–2135 行](https://github.com/ClusterLabs/PAF/blob/v2.3.0/script/pgsqlms#L2094-L2135)）。
+
+## 计划内切换：确认旧主的数据一条不少
+
+管理员用 `crm_resource --move --master` 把主角色挪到另一台（只依据文档），调度器排的是：旧主 demote（PAF 先干净关机再以备库身份起来），然后新主 promote。这时还多一道检查。
+
+PostgreSQL 主库干净关机时，最后会写一条「关机检查点」记录，并在退出前把 WAL 发给连着的备库（这一点只依据 PostgreSQL 文档）。所以新主只要收到了这条记录，就说明旧主写过的每一条 WAL 它都有，旧主之后能直接作为它的备库跟上来，不用重建。
+
+PAF 在 pre-promote 里判断这是不是一次计划内切换：恰好一个主、一个要 demote、一个要 promote，demote 的就是现在的主，而且这个旧主**不在**这次要 stop 的名单里（[`_is_switchover`，第 431–444 行](https://github.com/ClusterLabs/PAF/blob/v2.3.0/script/pgsqlms#L431-L444)）。是的话，要提升的那台用 `pg_waldump` 把本地从上一个检查点到最后收到的位置之间的 WAL 列出来，找那条关机检查点（[第 829–887 行](https://github.com/ClusterLabs/PAF/blob/v2.3.0/script/pgsqlms#L829-L887)）：
+
+<div class="table-scroll">
+
+| 结果 | 日志 | promote 怎么办 |
+| --- | --- | --- |
+| 找到了 | `Slave received the shutdown checkpoint` | 继续，照常和其他备库比位置 |
+| 没找到 | `Did not receive the shutdown checkpoint from the old master!` | 记 `cancel_switchover=1`，promote 返回一般错误，切换取消 |
+| 查不了（例如读不到最后收到的位置） | `Could not fetch last received LSN!` | 记 `cancel_switchover=2`，promote 返回 `OCF_ERR_ARGS`（硬失败，第 10 讲）；源码注释写明用意是让资源不再放到这台（[第 1825–1835 行](https://github.com/ClusterLabs/PAF/blob/v2.3.0/script/pgsqlms#L1825-L1835)） |
+
+</div>
+
+对应代码在 [第 1825–1835 行](https://github.com/ClusterLabs/PAF/blob/v2.3.0/script/pgsqlms#L1825-L1835)。
+
+## 故障切换：能挑出最好的，但不保证不丢
+
+主库所在节点断电时，没有关机检查点可查。PAF 能做的只是在幸存的备库里挑收到最多的那台；旧主上已经提交、但还没传到任何备库的事务，就丢了。PAF 的文档对此说得很直白：故障切换后「很可能」丢了几个已提交的事务，旧主在 WAL 上也走得比新主远，不能原样作为备库回来（只依据文档）。
+
+要做到故障切换也不丢已提交的事务，靠的是 PostgreSQL 的同步复制：设 `synchronous_standby_names`，主库要等至少一个备库确认收到 WAL 才告诉客户端提交成功（只依据 PostgreSQL 文档）。代价是两节点集群里备库一停，主库上的写入就卡住，直到改配置或备库回来。PAF 不替你做这个选择，它对同步、异步复制的处理是一样的。
+
+## 回到主线：node1 断电，node2 被提升
+
+两节点，node1 是主库，node2 是备库。按本篇的代码，这一路上 PAF 做的事：
+
+<div class="table-scroll">
+
+| 时刻 | 发生什么 | CIB 里的 `master-pgsqld` |
+| --- | --- | --- |
+| 断电前 | node1 的 monitor 每 15 秒查一次 `pg_stat_replication`，node2 连着、正在复制 | node1 1001，node2 1000（永久属性） |
+| node1 断电，被 fencing | node2 的备库连不上主库，WAL 停在断电前收到的位置 | 不变；node1 的 1001 还在，但 node1 离线 |
+| 调度器重算 | 在线的只有 node2，分数 1000，选它提升；排 pre-promote 通知 → promote → post-promote 通知 → VIP 启动 | 不变 |
+| pre-promote | node2 不是现在的主库，不算原地恢复；旧主要被 stop，不算计划内切换。node2 写 `lsn_location`，`nodes` 名单里只有它自己 | 不变 |
+| promote | 名单里没有别的节点可比，直接 `pg_ctl -w promote`，等 monitor 返回 8 | 不变 |
+| 之后 | node2 的主库 monitor 打分：没有备库连着，记 `No secondary connected to the master`；node1 不在分区里，不动；给自己写 1001 | node1 1001，node2 1001 |
+
+</div>
+
+node1 断电前最后几毫秒提交、还没传到 node2 的事务，这次切换里丢了。
+
+### 旧主库回来
+
+node1 被 fencing 重启后，如果集群服务随开机启动，Pacemaker 会先在 node1 上 probe（一次性的 monitor，第 10 讲）。PostgreSQL 没在跑，控制文件里却还写着 `in production`，PAF 返回 9，日志 `controldata indicates a running primary instance, the instance has probably crashed`（[第 974–981 行](https://github.com/ClusterLabs/PAF/blob/v2.3.0/script/pgsqlms#L974-L981)）。PAF 的 start、stop、demote 都先跑一次 monitor，看到 9 一律返回错误（例如 start 的 [第 1446–1455 行](https://github.com/ClusterLabs/PAF/blob/v2.3.0/script/pgsqlms#L1446-L1455)、stop 的 [第 1523–1532 行](https://github.com/ClusterLabs/PAF/blob/v2.3.0/script/pgsqlms#L1523-L1532)），所以这个实例既不能被启动成备库，也停不下来——stop 失败按第 11、12 讲默认会再招来一次 fencing。
+
+这是有意为之：PAF 不做任何可能改动数据的事。PAF 文档给的流程是（只依据文档）：
+
+1. 集群服务和 PostgreSQL 都不要设开机自启，被 fencing 的节点重启后保持安静；
+2. 查清故障原因；
+3. 以新主库为准，用 `pg_rewind` 或 `pg_basebackup` 把 node1 重建成备库，别覆盖本机特有的配置文件；
+4. 在活着的节点上用 `crm_simulate -SL --node-up node1` 预演一遍 node1 加入后集群会做什么；
+5. 启动 node1 的集群服务，必要时清掉旧的 fail-count。
+
+## 读日志时看哪里
+
+PAF 的日志和 Pacemaker 的日志在一起，前缀是资源名，例如 `pgsqlms(pgsqld)[...]`。
+
+<div class="table-scroll">
+
+| 想知道 | 日志里找 |
+| --- | --- |
+| 主库给谁改了分 | `Update score of "<节点>" from <旧> to <新> because ...` |
+| 哪个备库被排除了 | `Forbidding promotion on "<节点>" in state "startup"`、`"<节点>" is not connected to the primary` |
+| 备库名对不上节点名 | `Ignoring unknown application_name/node "<名字>"` |
+| 开始一次提升 | `Promoting instance on node "<节点>"` |
+| 各备库报的位置 | `Current node TL#LSN: <时间线>#<LSN>` |
+| 选中的不是最新的、让位了 | `<节点> is the best candidate to promote, aborting current promotion` |
+| 提升完成 | `Promote complete` |
+| 原地恢复主库 | `This is a master recovery!`、`Recovering old master, no election needed` |
+| 计划内切换的检查 | `Slave received the shutdown checkpoint` 或 `Did not receive the shutdown checkpoint from the old master!` |
+| 旧主库崩溃后还没重建 | `controldata indicates a running primary instance, the instance has probably crashed` |
+
+</div>
+
+看分数本身：`crm_attribute -l forever -N node2 -n master-pgsqld -G`，或 `crm_mon -A1`。私有属性 `lsn_location-pgsqld` 只能用 `attrd_updater -Q -A -n lsn_location-pgsqld` 从 attrd 查，CIB 里没有，而且 post-promote 之后就被删了。
+
+## 还没核对的
+
+- 本篇没有在真实集群上跑过一次故障切换或计划内切换，流程全部来自读 PAF v2.3.0 和 Pacemaker 2.1.11 的源码。
+- 故障切换时旧主的实例是否出现在通知的 stop 名单里（这决定 `_is_switchover` 判否），是按 Pacemaker 对 fencing 后的推定 stop 推断的，没有在 `pe_notif.c` 里逐行核对。
+- node1 重建后带着 1001 重新加入、node2 的 monitor 还没来得及改写它的那段时间里，调度器会不会想把主角色挪回 node1，取决于 2.1.11 给当前主实例怎样加分，没有核对。
+- 主库干净关机时会先把 WAL 发给备库、同步复制的设置和代价，只依据 PostgreSQL 文档。
+- v2.3.0 之后 master 分支上的 23 个提交，除了排名方向的修正，没有逐一看。

@@ -40,10 +40,10 @@ export const storyline: Step[] = [
   },
   {
     stages: ["04", "10"],
-    what: "谁该当主，调度器看的是各节点的 promotion score：备库上的资源代理平时在 monitor 里经 attrd 把它写进 status 段（属性名 master-<资源名>），断电节点的那份在它离开时就被删掉。新主库所在节点的 controld 按 transition 让本机 execd 运行资源代理的 promote：在超时（默认 20 秒）内返回 0 才算成功，排在后面的 VIP 启动才放行；之后主角色的 monitor 期望返回 8。",
+    what: "谁该当主，调度器看的是各节点的 promotion score（属性名 master-<资源名>）：主库上的 PAF 平时在每次 monitor 里替所有节点写好，是永久属性，写在 CIB 的 nodes 段——主库自己 1001、连着的备库 1000。断电节点那份还在，但它离线，调度器只在在线节点里挑。新主库所在节点的 controld 按 transition 让本机 execd 运行资源代理的 promote：在超时（默认 20 秒）内返回 0 才算成功，排在后面的 VIP 启动才放行；之后主角色的 monitor 期望返回 8。",
   },
   {
     stages: ["14"],
-    what: "PAF 在 promote 前确认这个备库的数据足够新，再把它提升成新主库。",
+    what: "被选中的备库在 pre-promote 通知里和其他备库互报 WAL 位置，promote 时确认自己最新才 pg_ctl promote，等 monitor 返回 8；不是最新就把分数让给最新的那台、返回失败让调度器重算。异步复制下，断电前没传到备库的已提交事务会丢；旧主库重启后 probe 返回 9，要人工重建成备库才能回来。",
   },
 ];
