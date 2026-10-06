@@ -19,6 +19,8 @@ upstream:
 
 Pacemaker 自己不探测节点死活。它做的每个决定——谁当 DC（Designated Controller，集群里负责做决定的那个节点）、要不要 fencing、资源搬到哪——都建立在 Corosync 告诉它的成员名单上。所以第一站是弄清楚：Corosync 什么时候、凭什么认定一个节点不在了，又是怎么把这件事告诉 Pacemaker 的。
 
+<Sketch slug="corosync-first-boundary" />
+
 本篇的版本：Corosync v3.1.10（Rocky Linux 9 自带的版本），Pacemaker 2.1.11。下面每条结论都附了这两个 tag 里的源码位置；只依据手册的会单独说明。
 
 ## 一句话

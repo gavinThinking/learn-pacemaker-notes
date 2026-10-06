@@ -2,6 +2,7 @@
 import { getCollection, render } from "astro:content";
 
 import Diagram from "../../components/Diagram.astro";
+import Sketch from "../../components/Sketch.astro";
 import Base from "../../layouts/Base.astro";
 
 export async function getStaticPaths() {
@@ -28,8 +29,8 @@ const { Content } = await render(note);
 
   <div class="shell">
     <article class="prose">
-      <!-- 手记里直接写 <Diagram name="..." /> 即可内嵌架构图，不必自己 import。 -->
-      <Content components={{ Diagram }} />
+      <!-- 手记里直接写 <Diagram name="..." /> 或 <Sketch slug="..." /> 即可内嵌架构图、图解，不必自己 import。 -->
+      <Content components={{ Diagram, Sketch }} />
 
       {
         note.data.evidence.length > 0 && (
