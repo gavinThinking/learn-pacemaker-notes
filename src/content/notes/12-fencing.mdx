@@ -1,0 +1,222 @@
+---
+title: fencing：状态不明的节点，先确认它停了，才能动它的资源
+date: 2026-10-06
+summary: 调度器发现某个节点状态不明——不在成员名单里了、进程没了、加入失败——就把它标成 unclean，在 transition 里排一个 fencing 动作，它上面资源的 stop 只记成「推定已停」。DC 的 controld 把请求交给 fenced，fenced 问遍所有节点，挑一个目标以外、能操作这个目标的 fence 设备去执行，默认 reboot。成功后 controld 删掉这个节点在 status 段的全部记录，推定的 stop 才生效，资源才能在别处启动。fencing 要求集群开了 stonith-enabled、配了设备，而且这一侧有 quorum（或 no-quorum-policy=ignore）；两节点集群靠 pcmk_delay_base 或 priority-fencing-delay 让固定的一方先动手。
+layer: L5
+stage: "12"
+upstream:
+  - label: lib/pengine/unpack.c：判定节点状态，决定要不要 fencing 以及原因
+    href: https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pengine/unpack.c#L1702-L1790
+  - label: lib/pengine/utils.c：pe_can_fence，判断现在能不能 fencing
+    href: https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pengine/utils.c#L36-L90
+  - label: lib/pacemaker/pcmk_scheduler.c：把 fencing 排进 transition
+    href: https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pacemaker/pcmk_scheduler.c#L548-L640
+  - label: daemons/controld/controld_fencing.c：请求 fencing、处理结果、成功后清记录
+    href: https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/daemons/controld/controld_fencing.c#L782-L1005
+  - label: daemons/fenced/fenced_remote.c：问遍各节点、挑执行者、按 topology 逐层试
+    href: https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/daemons/fenced/fenced_remote.c#L1429-L1495
+  - label: daemons/fenced/fenced_commands.c：设备能 fence 哪些节点、延迟怎么算
+    href: https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/daemons/fenced/fenced_commands.c#L1059-L1080
+links:
+  - to: "01"
+    why: 节点被划出成员名单是最常见的 fencing 原因；成员名单只说明「联系不上」，联系不上的节点可能还在写数据，所以要 fencing 把它变成确定的「已停」。
+  - to: "02"
+    why: 调度器只有在这一侧有 quorum 时才 fencing；两节点集群靠 two_node 保住 quorum，代价是网络分区时两边都会发起 fencing，要靠本篇的延迟让一方先动手。
+  - to: "03"
+    why: fencing 成功后 controld 删掉目标节点在 status 段的全部资源记录和临时属性，调度器下一轮看到的就是「这个节点上什么都没在跑」。
+  - to: "08"
+    why: fencing 是 transition 里的一个动作；目标节点上资源的 stop 变成伪动作排在它后面，fencing 不成功，依赖这些 stop 的启动和 promote 全都放不行。
+  - to: "09"
+    why: 执行 fencing 请求的是 DC 上的 controld；要 fence 的正是 DC 时，先选出新 DC，再由新 DC 发起。
+  - to: "11"
+    why: on-fail=fence 和 stop 失败的默认处理都会把节点标成 unclean，走的就是本篇这条路径。
+  - to: "13"
+    why: 没有 quorum 的一侧默认不去 fencing 已经不在线的节点；no-quorum-policy 决定这一侧拿自己的资源怎么办，fencing 决定另一侧的资源能不能被接手。
+  - to: "14"
+    why: PAF 的 promote 发生在旧主库所在节点被 fencing 之后；给 promotable 资源设 priority，再配 priority-fencing-delay，两节点脑裂时主库那一侧先动手。
+---
+
+前面几讲多次说到「先 fencing 再接手」：第 3 讲里断电节点的资源记录没人删，第 11 讲里 stop 失败默认 fencing。本篇把这一步拆开：调度器凭什么决定 fencing 一个节点，请求怎样传到真正去断电的那台机器，成功和失败之后各发生什么，两节点集群怎样避免两边同时动手。
+
+本篇的版本：Pacemaker 2.1.11。源码结论附链接，只依据文档的会单独说明。
+
+## 一句话
+
+一个节点联系不上，只能说明「不知道它在干什么」，不能说明「它已经停了」。它可能还挂着共享存储、还占着 VIP、还在以主库身份接受写入。在别处启动同一个资源之前，必须把「不知道」变成「确定已停」，办法就是 fencing（也叫 STONITH，Shoot The Other Node In The Head）：通过一个独立于这个节点操作系统的设备——电源控制器、BMC、虚拟化平台的 API——直接把它断电或重启。Pacemaker 把 fencing 成功当作「这个节点上所有资源都已停止」的证据；fencing 不成功，它的资源就不会在别处启动。
+
+## 调度器什么时候决定 fencing
+
+调度器每次读 CIB，都会给每个节点判定状态（[unpack.c L1702-L1790](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pengine/unpack.c#L1702-L1790)）。下面这些情况会把节点标成 unclean（状态不明），日志里写的原因就是第二列：
+
+<div class="table-scroll">
+
+| 情况 | fencing 原因 |
+| --- | --- |
+| 集群启动后从没见过这个节点（`startup-fencing` 默认 true） | `peer has not been seen by the cluster` |
+| 节点加入时被拒绝 | `peer failed Pacemaker membership criteria` |
+| 有人显式请求 fencing 它，例如 on-fail=fence | `fencing was requested` |
+| 它本该在线，却不在 Corosync 成员名单里了（断电就是这种） | `peer is no longer part of the cluster` |
+| 还在成员名单里，但 Pacemaker 进程没了 | `peer process is no longer available` |
+| 它正常关机前已经声明要离开 | 不 fencing，当作干净退出 |
+
+</div>
+
+标成 unclean 时，日志写 `Cluster node <节点> will be fenced: <原因>`；如果现在没法 fencing，写的是 `... is unclean`（[unpack.c L112-L170](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pengine/unpack.c#L112-L170)）。
+
+「能不能 fencing」由 `pe_can_fence` 判断（[utils.c L36-L90](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pengine/utils.c#L36-L90)），按顺序检查：
+
+1. `stonith-enabled` 是 false：不能；
+2. CIB 里一个 fence 设备都没配：不能；
+3. 这一侧有 quorum：能；
+4. 没有 quorum，但 `no-quorum-policy=ignore`：能；
+5. 其他情况：不能。
+
+第 3、4 条是本篇和第 2、13 讲连起来的地方：**没有 quorum 的一侧，默认不去 fencing 别人**。道理是：没有 quorum 的一侧可能才是被隔离的少数派，它不该替整个集群下判决。
+
+满足条件的 unclean 节点，调度器在 transition 里排一个 fencing 动作，日志 `Scheduling node <节点> for fencing`（[pcmk_scheduler.c L531-L539](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pacemaker/pcmk_scheduler.c#L531-L539)）。不满足的，日志会说为什么（[L548-L640](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pacemaker/pcmk_scheduler.c#L548-L640)）：
+
+<div class="table-scroll">
+
+| 日志 | 意思 |
+| --- | --- |
+| `Node <节点> is unclean but cannot be fenced` | 有节点该 fencing 但做不到，后面一句说明原因 |
+| `Resource functionality and data integrity cannot be guaranteed ...` | 原因是没开 fencing 或没配设备 |
+| `Unclean nodes will not be fenced until quorum is attained or no-quorum-policy is set to ignore` | 原因是这一侧没有 quorum |
+| `No fencing will be done until there are resources to manage` | 集群里还没有受管理的资源，暂不 fencing |
+
+</div>
+
+一个 fence 设备都没配、又没关 `stonith-enabled` 时，调度器还会报错 `Resource start-up disabled since no STONITH resources have been defined`，所有资源都不启动（[unpack.c L925-L945](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pengine/unpack.c#L925-L945)）。这是故意的：宁可不提供服务，也不在无法确认对方已停时启动。
+
+## 推定的 stop：fencing 成功就当作已经停了
+
+断电节点上的资源没法真的执行 stop。调度器的做法是把这些 stop 变成伪动作（pseudo-action，图里有、但不派给任何节点执行），排在 fencing 动作之后：fencing 一成功，它们立刻算完成；fencing 不成功，它们一直挂着，所有排在它们后面的动作——在别处启动、promote——都放不行（[pcmk_sched_fencing.c L109-L240](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pacemaker/pcmk_sched_fencing.c#L109-L240)）。主角色的 demote 同样这样处理。日志是 info 级的 `<动作> is implicit after <节点> is fenced`。
+
+这就是为什么说 fencing 是安全的基石：第 8 讲的 transition 图里，从断电节点「接手」资源的每一条路径，都要先经过这个 fencing 动作。
+
+<Diagram
+  name="fencing-path"
+  caption="一次 fencing 的完整路径。调度器只决定 fencing 谁；由谁、用哪个设备去执行，是 fenced 在各节点之间问出来的。"
+  verified="source"
+  rev="1"
+  gaps={["没有在真实集群里触发 fencing，全部来自读调度器、controld 和 fenced 的代码", "fence agent 的具体行为（怎样调用 BMC 或虚拟化平台）因 agent 而异，图里只画了 Pacemaker 这一侧"]}
+/>
+
+## controld 发起请求，处理结果
+
+DC 的 controld 执行到 fencing 动作时，日志 `Requesting fencing (<动作>) targeting node <节点>`，把请求交给本机的 fenced，等待时间是 `stonith-timeout`（默认 60 秒）加上请求里带的延迟（[controld_fencing.c L957-L1005](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/daemons/controld/controld_fencing.c#L957-L1005)）。只有当已完成加入的节点只剩一个时，才允许目标节点 fencing 自己（[L934-L946](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/daemons/controld/controld_fencing.c#L934-L946)）。
+
+结果回来后（[L782-L930](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/daemons/controld/controld_fencing.c#L782-L930)）：
+
+- **成功**：日志 `Fence operation N for <节点> succeeded`。controld 把这个节点记为已离开、预期状态为 down，然后删掉它在 status 段的全部内容——资源历史和临时节点属性（[L218-L275](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/daemons/controld/controld_fencing.c#L218-L275)）。调度器下一次计算时，这个节点上已经「什么都没在跑」，资源可以在别处启动了。各节点都会收到通知，日志 `Peer <节点> was terminated (<动作>) by <执行者> on behalf of <发起者>: OK`。
+- **失败**：日志 `Fence operation N for <节点> failed: <原因> (aborting transition)`，中断当前 transition，重新计算后会再次尝试。同一个目标失败满 `stonith-max-attempts`（默认 10）次，日志 `Too many failures (N) to fence <节点>, giving up`，不再尝试（[L101-L133](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/daemons/controld/controld_fencing.c#L101-L133)）。如果失败原因是找不到能用的设备，controld 不立刻重算，而是等别的事件触发，日志后半句是 `(aborting transition and giving up for now)`。
+
+fencing 一直不成功，集群就一直卡在这里：资源不会在别处启动。确认节点真的已经断电时，可以手工告诉集群「已经 fencing 过了」（`stonith_admin --confirm <节点>`），这只依据命令的帮助文字，没有追实现。手工确认等于你替 fence 设备做了担保，确认错了就是脑裂。
+
+## fenced：谁去执行，用哪个设备
+
+调度器只决定 fencing 谁，不管怎么做。真正执行的是 fenced，每个节点上都有一个。
+
+**设备注册在哪些节点上。** fence 设备在 CIB 里是一个普通的 stonith 类资源，但它不需要「运行」才能用。每个节点的 fenced 自己跑一遍调度器，只要这个设备没被禁用、本节点对它的分数不是负数，就在本机注册这个设备（[fenced_scheduler.c L109-L175](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/daemons/fenced/fenced_scheduler.c#L109-L175)）。所以常见的写法是用 location 约束让设备避开它要 fence 的那个节点。
+
+**一个设备能 fence 哪些节点**，由设备参数 `pcmk_host_check` 决定，不配时按下表取默认（[fenced_commands.c L1059-L1080](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/daemons/fenced/fenced_commands.c#L1059-L1080)）：
+
+<div class="table-scroll">
+
+| 设备上配了什么 | 默认的检查方式 | 怎么判断 |
+| --- | --- | --- |
+| `pcmk_host_list` 或 `pcmk_host_map` | `static-list` | 目标在配置的列表里 |
+| 都没配，agent 支持 `list` 动作 | `dynamic-list` | 运行 agent 的 list，结果缓存 60 秒 |
+| agent 不支持 list、支持 `status` | `status` | 对目标运行 agent 的 status |
+| 都不支持 | `none` | 认为能 fence 任何节点 |
+
+</div>
+
+**挑执行者。** 发起请求的 fenced 向所有节点广播查询：「谁能 fence 这个目标？」收集回复后，按下面的优先级挑（[fenced_remote.c L1429-L1495](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/daemons/fenced/fenced_remote.c#L1429-L1495)）：
+
+1. 目标以外、设备已验证过的节点。「已验证」指这个节点上的设备最近成功跑过一次 list、monitor 或 status；
+2. 回复收齐后，目标以外、设备没验证过的节点；
+3. 都没有，才让目标自己 fencing 自己（对断电的节点当然没用）；
+4. 还不行，就换 topology 的下一层再找。
+
+全部找不到，日志 `Couldn't find anyone to fence (<动作>) <节点> using <设备>`。
+
+**topology：多层后备。** 一个节点可以配多层 fencing（最多 9 层），按层号从小到大试：第一层失败才试第二层。同一层里可以有多个设备，必须全部成功这一层才算成功（[fenced_remote.c L940-L1000](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/daemons/fenced/fenced_remote.c#L940-L1000)）。典型配法是第一层用 BMC，第二层用两个 PDU 插座（服务器有两路电源）。同一层多个设备做 reboot 时，fenced 不会一个一个地重启，而是先把它们全部 off，再全部 on——否则先断的那路电源还没恢复，另一路一直供着电，服务器根本没断过。所有层都失败，日志 `All fencing options targeting <节点> ... failed`。
+
+## 两节点集群：别让两边同时动手
+
+第 2 讲说过，两节点集群开了 `two_node` 后，网络断开时两边都有 quorum，两边都会把对方标成 unclean 并发起 fencing。如果 fence 设备允许两边同时得手，结果是两台一起被关掉。办法是让固定的一方等一会儿再动手：
+
+<div class="table-scroll">
+
+| 配置 | 在哪配 | 效果 |
+| --- | --- | --- |
+| `pcmk_delay_base` | fence 设备参数 | 用这个设备 fencing 前固定等待；可以按目标节点分别写，例如 `node1:5s;node2:0s` |
+| `pcmk_delay_max` | fence 设备参数 | 在 `pcmk_delay_base` 到 `pcmk_delay_max` 之间随机等待 |
+| `priority-fencing-delay` | 集群选项，默认 0 | 只在这一侧没过半时生效：要 fence 的是资源优先级总和最高的节点，就额外等这么久 |
+
+</div>
+
+前两项在 fenced 执行设备时生效（[fenced_commands.c L680-L713](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/daemons/fenced/fenced_commands.c#L680-L713)）。`priority-fencing-delay` 由调度器算好写进 fencing 动作（[pe_actions.c L1213-L1278](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pengine/pe_actions.c#L1213-L1278)）：节点的优先级是它上面运行的资源的 `priority` 之和，主角色实例算 priority + 1；资源的 priority 是 0 时不计入，所以要先给资源设 priority，这个选项才有意义。两个延迟会叠加，选项说明建议 `priority-fencing-delay` 至少是设备延迟的两倍（[options.c L349-L366](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/common/options.c#L349-L366)）。
+
+举个例子：PostgreSQL 的 promotable 资源设 `priority=10`，`priority-fencing-delay=15s`。网络断开时，主库所在的 node1 优先级 11，备库所在的 node2 优先级 10。node2 要 fence 的是优先级最高的 node1，等 15 秒；node1 要 fence 的 node2 不是最高，立刻动手。结果是主库那一侧活下来，不用切换。
+
+代价是：node1 真的断电时，node2 也要白等这 15 秒才能 fencing，切换时间相应变长。
+
+## 相关的集群选项
+
+<div class="table-scroll">
+
+| 选项 | 默认值 | 作用 |
+| --- | --- | --- |
+| `stonith-enabled` | true | 关掉后，不在线的节点被当作已经停了——可能导致脑裂和数据损坏 |
+| `stonith-action` | reboot | fencing 时的动作，可选 reboot、off |
+| `stonith-timeout` | 60s | 等待一次 fencing 完成的时间 |
+| `stonith-max-attempts` | 10 | 同一个目标失败多少次后放弃 |
+| `concurrent-fencing` | false | 是否允许同时 fencing 多个节点；false 时按顺序来，DC 自己排在最后 |
+| `startup-fencing` | true | 集群启动后，没见过的节点要先 fencing |
+| `priority-fencing-delay` | 0 | 见上一节 |
+| `stonith-watchdog-timeout` | 0 | 用 SBD 的看门狗自我重启代替外部设备时配置；本篇不展开 |
+| `fence-reaction` | stop | 节点得知自己被 fencing 了却还活着时怎么办：stop 是停掉 Pacemaker，panic 是立刻重启 |
+
+</div>
+
+默认值和说明来自选项定义（[options.c L103-L114](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/common/options.c#L103-L114)、[L250-L361](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/common/options.c#L250-L361)）。
+
+## 回到主线
+
+两节点，PostgreSQL 主库在 node1，node1 突然断电，fence 设备是两台机器各自的 BMC。
+
+1. 约 6.6 秒后 node2 把 node1 划出成员名单（第 1 讲）。two_node 让 node2 保有 quorum（第 2 讲）；
+2. node1 是 DC 的话，node2 先选自己当 DC（第 9 讲）；
+3. 调度器看到 node1 本该在线却不在成员名单里，原因 `peer is no longer part of the cluster`，标成 unclean。node2 有 quorum、有设备，于是排 fencing node1；node1 上 PostgreSQL 的 demote 和 stop、VIP 的 stop 都变成推定动作，排在 fencing 后面；
+4. node2 的 controld 请求 fencing，fenced 问遍在线节点——只有 node2 自己——node2 上注册了能 fence node1 的 BMC 设备，于是 node2 执行，默认 reboot。断电的机器 BMC 仍然可达（BMC 有独立供电）时，fencing 成功；
+5. controld 删掉 node1 在 status 段的全部记录，推定的 stop 生效；调度器重算，在 node2 上 promote、启动 VIP（第 5–8 讲）。
+
+如果 node1 整机断电连 BMC 也断了，BMC 联系不上，fencing 失败，node2 每次重算都再试，满 10 次后放弃，资源不会在 node2 上启动。这时要么配第二层 topology（比如 PDU），要么人工确认 node1 确实断了电再执行 `stonith_admin --confirm node1`。这是 BMC 作为唯一 fence 设备的真实缺口。
+
+## 读日志时看哪里
+
+<div class="table-scroll">
+
+| 想知道 | 日志里找 |
+| --- | --- |
+| 为什么要 fencing 这个节点 | 调度器：`Cluster node <节点> will be fenced: <原因>` |
+| 为什么没 fencing | 调度器：`... is unclean but cannot be fenced`，后面一句说明原因 |
+| fencing 请求发出 | controld：`Requesting fencing (<动作>) targeting node <节点>` |
+| fenced 开始找执行者 | fenced：`Requesting peer fencing (<动作>) targeting <节点>` |
+| 某个设备能不能 fence 目标 | fenced：`<设备> is eligible to fence ...` 或 `is not eligible` |
+| 等了延迟 | fenced：`Delaying '<动作>' action targeting <节点> using <设备> for Ns` |
+| 找不到执行者 | fenced：`Couldn't find anyone to fence ...` |
+| 结果 | controld：`Fence operation N for <节点> succeeded` 或 `failed: <原因>`；各节点 `Peer <节点> was terminated ...` |
+| 放弃了 | controld：`Too many failures (N) to fence <节点>, giving up` |
+
+</div>
+
+## 还没核对的
+
+- 本篇没有在真实集群里触发 fencing，全部结论来自读调度器、controld 和 fenced 的代码。
+- `stonith_admin --confirm` 的实现、确认后 controld 怎样处理，只看了帮助文字。
+- fencing 被 controld 以外的客户端发起（例如 `stonith_admin --reboot`）时，结果怎样同步给 DC，没有追。
+- SBD 看门狗 fencing（`stonith-watchdog-timeout`）和共享存储 fencing（例如 `fence_scsi`、unfencing）没有展开。
+- 两边同时 fencing 时，fence 设备本身是否互斥（有的 BMC 同一时刻只接受一个会话）取决于硬件，不在 Pacemaker 代码里。

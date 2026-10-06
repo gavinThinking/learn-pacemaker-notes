@@ -135,6 +135,7 @@ export const layers: Layer[] = [
         title: "fencing / STONITH",
         summary: "为什么不能靠「对方应该已经停了」，fence 设备和拓扑怎么配。",
         upstream: "daemons/fenced",
+        note: "12-fencing",
       },
       {
         no: "13",

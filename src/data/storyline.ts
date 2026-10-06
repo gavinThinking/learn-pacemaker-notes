@@ -32,7 +32,7 @@ export const storyline: Step[] = [
   },
   {
     stages: ["12"],
-    what: "断电节点的状态未知，先 fencing 确认它真的停了，才能在别处接手它的资源。",
+    what: "调度器判定断电节点状态不明（原因 peer is no longer part of the cluster），在 transition 里排一个 fencing 动作，它上面资源的 demote、stop 只记成推定动作排在后面。fenced 问遍在线节点，由活着的节点用能操作断电节点的设备（比如它的 BMC）执行，默认 reboot。成功后 controld 删掉断电节点在 status 段的全部记录，推定的 stop 才生效；失败就重算再试，同一目标 10 次后放弃，资源一直不会在别处启动。",
   },
   {
     stages: ["05", "06", "07", "08"],

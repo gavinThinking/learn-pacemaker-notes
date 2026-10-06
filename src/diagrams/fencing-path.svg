@@ -1,0 +1,109 @@
+<svg data-lpn-source-sha="eeb9b8908eac7e3d" width="100%" id="fenc" viewBox="0 0 640 480" style="min-width: 560px" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="fenc-title fenc-desc">
+  <title id="fenc-title">一次 fencing 从调度器判定到资源在别处接手</title>
+  <desc id="fenc-desc">调度器读 CIB 时发现某个节点状态不明（unclean），例如它不在成员名单里了，就在 transition 里排一个 stonith 动作，并把这个节点上资源的 stop 记成推定动作：不真的执行，fencing 成功就当作已经停了。DC 的 controld 把 fencing 请求交给本机 fenced，等待时间是 stonith-timeout（默认 60 秒）。fenced 向所有节点的 fenced 广播查询，谁的设备能 fence 这个目标；先挑目标以外、设备已验证的节点，其次是未验证的，最后才让目标自己 fence 自己；配了 topology 就一层一层试。执行者运行 fence agent，默认动作是 reboot。成功后 controld 删掉目标节点在 status 段的全部记录，推定的 stop 生效，资源在别处启动；失败就中断 transition 重算再试，同一个目标失败满 stonith-max-attempts（默认 10）次后放弃。</desc>
+  <defs>
+    <style>
+      #fenc {
+        --fenc-paper: var(--paper-raised, #ffffff);
+        --fenc-node: var(--paper, #fdfcf9);
+        --fenc-paper-2: var(--paper-muted, #f6f3ec);
+        --fenc-ink: var(--ink, #22201b);
+        --fenc-muted: var(--ink-muted, #6a6459);
+        --fenc-soft: var(--ink-subtle, #7a7365);
+        --fenc-rule: var(--line, #e7e1d5);
+        --fenc-accent: var(--brand, #2f5fd0);
+        --fenc-tint: var(--brand-light, #eef2fb);
+        --fenc-sans: var(--font-body, "Inter Variable", Inter, -apple-system, "PingFang SC", "Noto Sans SC", sans-serif);
+        --fenc-mono: var(--font-mono, ui-monospace, SFMono-Regular, Consolas, monospace);
+      }
+      #fenc .fenc-bg { fill: var(--fenc-paper); }
+      #fenc .fenc-band { fill: var(--fenc-paper-2); }
+      #fenc .fenc-step { fill: var(--fenc-node); stroke: var(--fenc-ink); stroke-width: 1; }
+      #fenc .fenc-end { fill: color-mix(in srgb, var(--fenc-ink) 3%, var(--fenc-node)); stroke: color-mix(in srgb, var(--fenc-ink) 30%, transparent); stroke-width: 1; }
+      #fenc .fenc-focal { fill: var(--fenc-tint); stroke: var(--fenc-accent); stroke-width: 1.2; }
+      #fenc .fenc-arrow { fill: none; stroke: var(--fenc-muted); stroke-width: 1.2; }
+      #fenc .fenc-dashed { stroke-dasharray: 5 4; }
+      #fenc .fenc-head { fill: var(--fenc-muted); }
+      #fenc .fenc-mask { fill: var(--fenc-paper); }
+      #fenc .fenc-name { font: 600 12px var(--fenc-sans); fill: var(--fenc-ink); }
+      #fenc .fenc-sub { font: 400 10px var(--fenc-sans); fill: var(--fenc-muted); }
+      #fenc .fenc-mono { font: 400 9px var(--fenc-mono); fill: var(--fenc-muted); }
+      #fenc .fenc-tag { font: 600 9px var(--fenc-mono); fill: var(--fenc-soft); letter-spacing: 0.08em; }
+      #fenc .fenc-label { font: 400 10px var(--fenc-sans); fill: var(--fenc-muted); }
+      #fenc .fenc-rule { stroke: var(--fenc-rule); stroke-width: 0.8; }
+    </style>
+    <marker id="fenc-arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+      <polygon class="fenc-head" points="0 0, 8 3, 0 6"/>
+    </marker>
+  </defs>
+
+  <rect class="fenc-bg" width="640" height="480"/>
+
+  <!-- 连线 -->
+  <path class="fenc-arrow" d="M184 72 H240" marker-end="url(#fenc-arrow)"/>
+  <path class="fenc-arrow" d="M400 72 H456" marker-end="url(#fenc-arrow)"/>
+  <path class="fenc-arrow" d="M536 104 V176" marker-end="url(#fenc-arrow)"/>
+  <path class="fenc-arrow" d="M456 208 H400" marker-end="url(#fenc-arrow)"/>
+  <path class="fenc-arrow" d="M240 208 H184" marker-end="url(#fenc-arrow)"/>
+  <path class="fenc-arrow" d="M104 240 V312" marker-end="url(#fenc-arrow)"/>
+  <path class="fenc-arrow" d="M184 344 H240" marker-end="url(#fenc-arrow)"/>
+  <path class="fenc-arrow fenc-dashed" d="M144 240 V272 Q144 280 152 280 H528 Q536 280 536 288 V312" marker-end="url(#fenc-arrow)"/>
+
+  <rect class="fenc-mask" x="68" y="270" width="28" height="12" rx="2"/>
+  <text class="fenc-label" x="82" y="280" text-anchor="middle">成功</text>
+  <rect class="fenc-mask" x="326" y="262" width="28" height="12" rx="2"/>
+  <text class="fenc-label" x="340" y="272" text-anchor="middle">失败</text>
+
+  <!-- 第一行 -->
+  <rect class="fenc-step" x="24" y="40" width="160" height="64" rx="6"/>
+  <text class="fenc-name" x="104" y="62" text-anchor="middle">判定节点状态不明</text>
+  <text class="fenc-mono" x="104" y="78" text-anchor="middle">unclean</text>
+  <text class="fenc-sub" x="104" y="94" text-anchor="middle">例如不在成员名单里了</text>
+
+  <rect class="fenc-step" x="240" y="40" width="160" height="64" rx="6"/>
+  <text class="fenc-name" x="320" y="62" text-anchor="middle">排进 transition</text>
+  <text class="fenc-mono" x="320" y="78" text-anchor="middle">stonith 动作</text>
+  <text class="fenc-sub" x="320" y="94" text-anchor="middle">它上面的 stop 只是推定</text>
+
+  <rect class="fenc-step" x="456" y="40" width="160" height="64" rx="6"/>
+  <text class="fenc-name" x="536" y="62" text-anchor="middle">DC 请求 fencing</text>
+  <text class="fenc-mono" x="536" y="78" text-anchor="middle">stonith-timeout 60s</text>
+  <text class="fenc-sub" x="536" y="94" text-anchor="middle">controld 交给本机 fenced</text>
+
+  <!-- 第二行 -->
+  <rect class="fenc-step" x="456" y="176" width="160" height="64" rx="6"/>
+  <text class="fenc-name" x="536" y="198" text-anchor="middle">问遍所有 fenced</text>
+  <text class="fenc-mono" x="536" y="214" text-anchor="middle">query</text>
+  <text class="fenc-sub" x="536" y="230" text-anchor="middle">谁的设备能 fence 目标</text>
+
+  <rect class="fenc-focal" x="240" y="176" width="160" height="64" rx="6"/>
+  <text class="fenc-name" x="320" y="198" text-anchor="middle">挑出执行者</text>
+  <text class="fenc-mono" x="320" y="214" text-anchor="middle">已验证 › 未验证 › 自己</text>
+  <text class="fenc-sub" x="320" y="230" text-anchor="middle">配了 topology 就逐层试</text>
+
+  <rect class="fenc-step" x="24" y="176" width="160" height="64" rx="6"/>
+  <text class="fenc-name" x="104" y="198" text-anchor="middle">运行 fence agent</text>
+  <text class="fenc-mono" x="104" y="214" text-anchor="middle">reboot（默认）</text>
+  <text class="fenc-sub" x="104" y="230" text-anchor="middle">返回 0 才算成功</text>
+
+  <!-- 第三行 -->
+  <rect class="fenc-focal" x="24" y="312" width="160" height="64" rx="6"/>
+  <text class="fenc-name" x="104" y="334" text-anchor="middle">删掉它的全部记录</text>
+  <text class="fenc-mono" x="104" y="350" text-anchor="middle">status 段</text>
+  <text class="fenc-sub" x="104" y="366" text-anchor="middle">推定的 stop 生效</text>
+
+  <rect class="fenc-step" x="240" y="312" width="160" height="64" rx="6"/>
+  <text class="fenc-name" x="320" y="334" text-anchor="middle">别处接手资源</text>
+  <text class="fenc-mono" x="320" y="350" text-anchor="middle">新 transition</text>
+  <text class="fenc-sub" x="320" y="366" text-anchor="middle">promote、启动 VIP</text>
+
+  <rect class="fenc-step" x="456" y="312" width="160" height="64" rx="6"/>
+  <text class="fenc-name" x="536" y="334" text-anchor="middle">重新计算再试</text>
+  <text class="fenc-mono" x="536" y="350" text-anchor="middle">stonith-max-attempts</text>
+  <text class="fenc-sub" x="536" y="366" text-anchor="middle">同一目标失败 10 次后放弃</text>
+
+  <!-- 图例 -->
+  <line class="fenc-rule" x1="24" y1="440" x2="616" y2="440"/>
+  <rect class="fenc-focal" x="24" y="452" width="24" height="12" rx="2"/>
+  <text class="fenc-label" x="54" y="462">重点：由谁去执行 fencing，成功后它的记录被删掉</text>
+</svg>
