@@ -1,0 +1,201 @@
+---
+title: monitor 失败之后：on-fail 决定怎么处理，migration-threshold 决定什么时候换节点
+date: 2026-10-06
+summary: 一次 monitor 失败，DC 的 controld 经 attrd 把那个节点上的 fail-count 加 1，并中断当前 transition 请调度器重算。调度器先看这个动作的 on-fail：默认 restart，在原节点先 stop 再 start；只有失败次数达到 migration-threshold，才加一条 -INFINITY 位置约束把资源赶到别的节点。migration-threshold 默认是 INFINITY，按一百万计，所以不改配置时 monitor 失败几乎永远是原地重启；start 失败默认直接把计数记成 INFINITY，一次就换节点。failure-timeout 默认 0，失败永不过期，要靠 crm_resource --cleanup 手工清。
+layer: L4
+stage: "11"
+upstream:
+  - label: daemons/controld/controld_te_events.c：DC 看到失败结果后更新 fail-count、中断 transition
+    href: https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/daemons/controld/controld_te_events.c#L179-L270
+  - label: lib/pengine/pe_actions.c：解析 on-fail 和它的默认值
+    href: https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pengine/pe_actions.c#L890-L1010
+  - label: lib/pengine/unpack.c：按 on-fail 处理失败的资源
+    href: https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pengine/unpack.c#L2426-L2500
+  - label: lib/pacemaker/pcmk_sched_resource.c：比较失败次数和 migration-threshold
+    href: https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pacemaker/pcmk_sched_resource.c#L571-L615
+  - label: lib/pengine/failcounts.c：把多条 fail-count 属性加起来，判断是否已过期
+    href: https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pengine/failcounts.c#L373-L415
+links:
+  - to: "04"
+    why: fail-count 和 last-failure 是 controld 经 attrd 写的临时节点属性，存在 status 段里；节点离开集群时这些属性随之删除，所以重启节点也会清掉它上面的失败次数。
+  - to: "06"
+    why: 失败次数没到阈值时不改变任何分数，资源留不留在原节点仍按第 6 讲的分数和 stickiness 算；到了阈值加的是 -INFINITY，任何 stickiness 都压不过它。
+  - to: "07"
+    why: on-fail=demote 只能用在 promote 和主角色的 monitor 上；匿名 clone 的一个实例达到阈值时，被赶出那个节点的是整个 clone，不只是这个实例。
+  - to: "08"
+    why: 失败结果一到，DC 立刻中断正在执行的 transition 请调度器重算；start 失败往计数上加多少，就写在图的 failed-start-offset 里随图下发。
+  - to: "09"
+    why: 更新 fail-count 的是 DC 上的 controld：它看到 CIB 里写回的失败结果，再经 attrd 改失败节点上的属性，执行动作的节点自己不改。
+  - to: "10"
+    why: 第 10 讲决定这次算不算失败、是不是硬失败；只有普通失败走本篇的 on-fail 和 migration-threshold，硬失败和致命失败不看阈值，直接禁止资源在一个或全部节点运行。
+  - to: "12"
+    why: on-fail=fence 和 stop 失败的默认处理都是 fencing 失败的节点；没开 fencing 时 stop 失败退成 block，资源原地冻住等人处理。
+  - to: "14"
+    why: PAF 主库的 monitor 失败同样按本篇处理：不设 migration-threshold 时默认在原节点重启主库，失败次数到了阈值才会换到另一个节点去 promote。
+---
+
+第 10 讲回答了「这次动作算不算失败」。本篇接着往下走：一次 monitor 失败之后，集群做了哪几件事——失败记在哪里、按什么规则选「原地重启」「换节点」还是「停掉」、失败记录什么时候消失。涉及三个配置项：`on-fail`、`migration-threshold`、`failure-timeout`，以及一个集群选项 `start-failure-is-fatal`。
+
+本篇的版本：Pacemaker 2.1.11。源码结论附链接，只依据文档的会单独说明。
+
+## 一句话
+
+失败会在失败的那个节点上记一次数（fail-count）。每个动作的 `on-fail` 决定失败之后怎么处理，默认 `restart`，就是在原节点先 stop 再 start。计数到了 `migration-threshold`，调度器才会禁止资源在这个节点运行，资源因此换到别的节点。`migration-threshold` 默认是 INFINITY，按一百万次计，所以不改配置时 monitor 失败几乎永远是原地重启。start 失败是例外：默认一次就把计数记成 INFINITY，资源立刻换节点。失败记录默认永不过期，要么设 `failure-timeout`，要么手工 cleanup。
+
+## 失败记在哪里
+
+资源所在节点的 controld 把 monitor 结果写进 CIB 的 status 段（第 3、10 讲）。DC 的 controld 盯着 status 段的变化，看到这条结果和期望值不一致，做两件事（[controld_te_events.c L470-560](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/daemons/controld/controld_te_events.c#L470-L560)）：
+
+1. **中断当前 transition**，请调度器重新计算。周期 monitor 的结果不属于正在执行的那张图，中断原因记作 `Change in recurring result`；图里某个动作失败，原因记作 `Event failed`。
+2. **经 attrd 更新失败节点上的两个临时属性**（[L179-L270](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/daemons/controld/controld_te_events.c#L179-L270)），属性名按「资源 + 动作 + 间隔毫秒数」分开记（[internal.h L350-L390](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/include/crm/common/internal.h#L350-L390)）：
+
+<div class="table-scroll">
+
+| 属性 | 例子 | 值 |
+| --- | --- | --- |
+| 失败次数 | `fail-count-pgsqld#monitor_15000` | 见下表 |
+| 最后一次失败的时间 | `last-failure-pgsqld#monitor_15000` | Unix 时间戳 |
+
+</div>
+
+失败次数怎么变，看失败的是哪个动作：
+
+<div class="table-scroll">
+
+| 失败的动作 | fail-count 怎么变 |
+| --- | --- |
+| 周期 monitor、promote、demote | 加 1 |
+| start | 加上图里的 `failed-start-offset`：`start-failure-is-fatal=true`（默认）时直接设为 INFINITY，`false` 时加 1（[pcmk_graph_producer.c L1021-L1029](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pacemaker/pcmk_graph_producer.c#L1021-L1029)） |
+| stop | 设为 INFINITY |
+| 结果符合期望 | 不变 |
+| 配了 `on-fail=ignore` 的动作 | 不变，只更新 last-failure，`crm_mon` 里仍看得到这次失败 |
+
+</div>
+
+调度器读的时候，把这个资源在这个节点上所有动作的 fail-count 属性加在一起（[failcounts.c L373-L415](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pengine/failcounts.c#L373-L415)）。monitor 失败 2 次、promote 失败 1 次，这个资源在这个节点上就算失败了 3 次。
+
+## on-fail：失败之后怎么处理
+
+`on-fail` 写在每个 op 上，monitor、start、stop 可以各配各的。调度器解析它的规则在 [pe_actions.c L890-L1010](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pengine/pe_actions.c#L890-L1010)，失败之后按取值处理在 [unpack.c L2426-L2500](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pengine/unpack.c#L2426-L2500)：
+
+<div class="table-scroll">
+
+| 取值 | 调度器怎么做 | 谁的默认值 |
+| --- | --- | --- |
+| `restart` | 在这个节点上 stop，再按正常调度找地方 start | 除 stop 外所有动作 |
+| `fence` | 把这个节点标成要 fencing，理由写 `<资源> failed there`（第 12 讲） | stop，且开了 fencing |
+| `block` | 资源标成不受管理，之后不再给它下发任何动作，原地冻住等人处理 | stop，且没开 fencing |
+| `stop` | 停掉资源，不在任何地方再启动 | — |
+| `standby` | 把整个节点设为 standby，上面所有资源都迁走 | — |
+| `demote` | 只把主降成备，不停 | — |
+| `ignore` | 什么也不做，当作成功 | — |
+
+</div>
+
+几条限制，都在 pe_actions.c 里检查：
+
+- stop 不能配 `standby`、`demote`、`stop`，配了会报配置错误并改回默认值（[L434-L470](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pengine/pe_actions.c#L434-L470)）。
+- `fence` 在没开 fencing 时改成 `stop`，日志 `Resetting 'on-fail' ...`（L907-L917）。
+- `demote` 只允许用在 promote 和主角色的周期 monitor 上（L536-L558）。
+- 调度器重算时扫一遍这个资源的全部历史，有多次失败就取最严重的那个 on-fail（[unpack.c L3625](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pengine/unpack.c#L3625)）。
+- 失败所在的节点本身已经要被 fencing 时，这些处理全部跳过：节点都要断电了，再在上面 stop 没有意义（[unpack.c L2418-L2423](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pengine/unpack.c#L2418-L2423)）。
+
+`restart` 只负责「停掉」这一半。重新启动时调度器照常计算位置：失败次数本身不加减任何分数，所以分数没变、又有 stickiness 时，资源通常还在原节点启动（第 6 讲）。
+
+## migration-threshold：失败几次才换节点
+
+每次调度，调度器对每个资源、每个节点检查一遍失败次数（[pcmk_sched_resource.c L571-L615](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pacemaker/pcmk_sched_resource.c#L571-L615)）：
+
+1. `migration-threshold=0`：不检查，永不因为失败换节点；
+2. 资源的失败都被忽略（`on-fail=ignore`）：不检查；
+3. 这个节点上的有效失败次数是 0：不检查；
+4. 剩余次数 = 阈值 − 失败次数。还大于 0，记一行 `can fail N more times ... before reaching migration threshold`，什么也不做；
+5. 小于等于 0：记警告 `cannot run on ... due to reaching migration threshold (clean up resource to allow again)`，然后在这个节点上加一条 -INFINITY 的位置约束，id 是 `__fail_limit__`（[pcmk_scheduler.c L105-L140](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pacemaker/pcmk_scheduler.c#L105-L140)）。资源只好去别的节点；别处都不行就停着。
+
+匿名 clone（实例之间没有区别的 clone，第 7 讲）的某个实例达到阈值，被禁止的是整个 clone 在这个节点上运行，不是这一个实例。
+
+几种配置组合的实际效果：
+
+<div class="table-scroll">
+
+| 配置 | 第一次 monitor 失败 | 之后 |
+| --- | --- | --- |
+| 都用默认（阈值 INFINITY） | 原地重启 | INFINITY 按 1000000 算，要失败一百万次才换节点，实际等于不换 |
+| `migration-threshold=3` | 原地重启，日志说还能失败 2 次 | 第 3 次失败后加 `__fail_limit__`，换节点 |
+| `migration-threshold=1` | 直接换节点 | — |
+| 默认配置，**start** 失败一次 | 计数记成 INFINITY，阈值减计数 ≤ 0，立刻换节点 | — |
+| `start-failure-is-fatal=false`、阈值 3，start 失败 | 计数加 1，原地再试 | 第 3 次 start 失败后换节点 |
+| `migration-threshold=0`，start 失败一次 | 计数是 INFINITY，但阈值为 0 不检查，不会因此换节点 | — |
+
+</div>
+
+默认值来源：`migration-threshold` 默认 INFINITY（[complex.c L797](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pengine/complex.c#L797)），配成负数会被改成 1 并告警（L934-L946）；`start-failure-is-fatal` 默认 true（[options.c L219-L228](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/common/options.c#L219-L228)）。Pacemaker 文档对阈值的说明也写着它只在 on-fail 为 restart 时起作用（[options.c L948-L962](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/common/options.c#L948-L962)）。
+
+stop 失败不用等阈值：计数直接是 INFINITY，而 on-fail 默认就是 fencing。节点被 fencing 后离开集群，它的临时属性随之删除（第 4 讲），失败次数也一起没了。
+
+<Diagram
+  name="failure-recovery"
+  caption="一次 monitor 失败之后的处理路径。失败次数记在失败的那个节点上，只有 on-fail 是 restart 时才和 migration-threshold 比较。"
+  verified="source"
+  rev="1"
+  gaps={["没有在真实集群里制造 monitor 失败来验证这条路径，全部来自读 controld 和调度器代码", "restart 之后资源在哪个节点启动取决于当时的分数，图里「通常还在这里」只是常见情形"]}
+/>
+
+## 失败记录怎么消失
+
+**failure-timeout**：默认 0，表示永不过期（[complex.c L798](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pengine/complex.c#L798)、[options.c L963-L972](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/common/options.c#L963-L972)）。设成 10 分钟时：
+
+1. 调度器算有效失败次数时，如果现在离**最后一次**失败已超过 10 分钟，这个资源在这个节点上的失败全部按 0 算（[failcounts.c L405-L414](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pengine/failcounts.c#L405-L414)）。注意是「最后一次」：只要 10 分钟内又失败一次，之前的失败全部继续算数。
+2. 调度器把「最后一次失败 + 10 分钟 + 1 秒」作为下次重算的时间写进图里（[unpack.c L4320-L4340](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pengine/unpack.c#L4320-L4340)）。DC 的重算定时器取它和 `cluster-recheck-interval`（默认 15 分钟）中较早的一个（[controld_timers.c L372-L395](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/daemons/controld/controld_timers.c#L372-L395)），所以过期后一秒左右就会重算，不必等 15 分钟。
+3. 重算时发现失败已过期，调度器排一个清除 fail-count 的动作，原因写 `it expired`（[unpack.c L4342-L4350](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pengine/unpack.c#L4342-L4350)）。`__fail_limit__` 随之不再生成，这个节点重新可用。
+
+两种情况不过期：动作结果是「没装」（找不到代理文件）的，必须手工清（[unpack.c L4296-L4301](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pengine/unpack.c#L4296-L4301)）；配了 `on-fail=block` 的资源，failure-timeout 被忽略并告警（[failcounts.c L395-L403](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pengine/failcounts.c#L395-L403)）。
+
+**手工清**：
+
+<div class="table-scroll">
+
+| 命令 | 作用 |
+| --- | --- |
+| `crm_resource --cleanup -r <资源> [-N <节点>]` | 资源有失败时，清掉失败次数和动作历史，让集群重新探测它当前的状态 |
+| `crm_resource --refresh -r <资源> [-N <节点>]` | 不管有没有失败，都删掉动作历史重新探测 |
+| `crm_failcount -G -r <资源> -N <节点>` | 查某个节点上的失败次数 |
+| `crm_failcount -D -r <资源> -N <节点>` | 删掉某个节点上的失败记录 |
+
+</div>
+
+以上作用只依据命令自带的帮助文字（[crm_resource.c L563-L578](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/tools/crm_resource.c#L563-L578)、[crm_failcount.in](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/tools/crm_failcount.in)），没有追到实现。第 10 讲的硬失败、致命失败也来自同一份失败历史，cleanup 后一起消失。
+
+## 回到主线
+
+主线讲的是节点断电，不经过本篇。这里换一个故障放回同一个集群：两节点，PostgreSQL 主库在 node1，主角色的 monitor 每 15 秒一次，其余全用默认值。
+
+1. node1 上的 PostgreSQL 进程崩了。下一次 monitor 返回 7，期望是 8，失败；
+2. DC 把 node1 上的 `fail-count-pgsqld#monitor_15000` 从 0 改成 1，中断当前 transition；
+3. 调度器看到 on-fail 是默认的 restart，阈值是默认的 INFINITY，日志说还能在 node1 上失败 999999 次。于是在 node1 上先降级、再停、再启动，分数没变，node1 重新被 promote；
+4. 如果配了 `migration-threshold=3`，第 3 次失败后 node1 得到 `__fail_limit__` 的 -INFINITY，主库只能在 node2 上 promote；node1 要等 failure-timeout 到期或手工 cleanup 才能再承载主库；
+5. 如果失败的是 node1 上的 stop，比如 PostgreSQL 停不下来，那就不是重启的问题：默认 fencing node1，走第 12 讲。
+
+## 读日志时看哪里
+
+<div class="table-scroll">
+
+| 想知道 | 日志里找 |
+| --- | --- |
+| 失败次数怎么变的 | controld：`Updating failcount for <资源> on <节点> after failed <动作>: rc=... (update=value++, ...)`；start 失败时 `update=INFINITY` |
+| 失败被忽略但仍有记录 | `Updating last failure for ...`，以及调度器的 `Pretending failed ...` |
+| 失败打断了正在执行的图 | `Transition N aborted by operation ...: Change in recurring result`，图里的动作失败则是 `Event failed` |
+| 离换节点还差几次 | 调度器：`... can fail N more times on ... before reaching migration threshold` |
+| 达到阈值被赶走 | 调度器警告：`... cannot run on ... due to reaching migration threshold` |
+| 失败过期 | 调度器 debug 日志：`Failcount for ... expired after Ns`；清除动作的原因 `it expired` |
+| 失败导致 fencing | fencing 原因：`<资源> failed there` |
+
+</div>
+
+## 还没核对的
+
+- 本篇没有在真实集群里制造 monitor 失败，全部结论来自读 controld 和调度器代码。
+- `restart` 之后资源重新放在哪个节点，依赖当时的分数；分数相同时调度器怎样在原节点和别的节点之间取舍，本篇没有追。
+- 主角色 monitor 失败、on-fail 为 restart 时，降级、停止、启动、再 promote 的具体动作序列没有用 crm_simulate 重放验证。
+- `crm_resource --cleanup` 怎样通过 controld 删除历史、通知 attrd 清属性，只看了帮助文字。
+- Pacemaker Remote 节点和 bundle 的失败处理（`reset-remote`、`restart-container` 两种 on-fail）没有展开。

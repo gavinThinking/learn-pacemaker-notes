@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>一次 monitor 失败之后，资源是原地重启还是换节点</title>
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400&family=Inter:wght@400;600&display=swap" rel="stylesheet">
+  <style>
+    /* 和 src/styles/tokens.css 同一套令牌；嵌进站点后 SVG 直接用站点的变量。 */
+    :root {
+      --paper: #fdfcf9; --paper-raised: #ffffff; --paper-muted: #f6f3ec; --ink: #22201b; --ink-muted: #6a6459;
+      --ink-subtle: #7a7365; --line: #e7e1d5; --brand: #2f5fd0; --brand-light: #eef2fb;
+      --font-display: Fraunces, "Songti SC", "Noto Serif SC", Georgia, serif;
+      --font-body: Inter, -apple-system, BlinkMacSystemFont, "PingFang SC", "Noto Sans SC", sans-serif;
+      --font-mono: ui-monospace, SFMono-Regular, Consolas, monospace;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --paper: #16150f; --paper-raised: #1f1e17; --paper-muted: #1d1c15; --ink: #f2efe6; --ink-muted: #b3ac9c;
+        --ink-subtle: #8b8474; --line: #34322a; --brand: #8fabf0; --brand-light: #1c2237;
+      }
+    }
+    body { margin: 0; padding: 3rem 1rem; background: var(--paper-raised); color: var(--ink); font-family: var(--font-body); }
+    .frame { max-width: 640px; margin: 0 auto; }
+    .eyebrow { font: 500 0.66rem var(--font-mono); letter-spacing: 0.18em; text-transform: uppercase; color: var(--ink-subtle); margin: 0 0 0.5rem; }
+    h1 { font: 400 1.75rem/1.2 var(--font-display); margin: 0 0 1.5rem; }
+    .canvas { overflow-x: auto; }
+  </style>
+</head>
+<body>
+<main class="frame">
+  <p class="eyebrow">Flowchart · 阶段 11</p>
+  <h1>一次 monitor 失败之后，资源是原地重启还是换节点</h1>
+  <div class="canvas">
+<svg id="fail" viewBox="0 0 640 480" style="min-width: 560px" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="fail-title fail-desc">
+  <title id="fail-title">一次 monitor 失败之后，资源是原地重启还是换节点</title>
+  <desc id="fail-desc">资源所在节点的 controld 把 monitor 的结果写进 CIB，结果和期望值不一致。DC 的 controld 看到这条记录，经 attrd 把该节点上这个资源的 fail-count 加 1（start、stop 失败默认直接记 INFINITY），并中断当前 transition 请调度器重新计算。调度器先看 on-fail：取 stop、block、standby、fence、demote、ignore 时按各自的方式处理；取默认的 restart 时，把这个节点上的失败次数和 migration-threshold 比较。没到阈值就在原节点 stop 再 start；到了就加一条 id 为 __fail_limit__ 的 -INFINITY 位置约束，资源换到别的节点。失败超过 failure-timeout 或被 crm_resource --cleanup 清掉后，计数归零，这个节点重新可用。</desc>
+  <defs>
+    <style>
+      #fail {
+        --fail-paper: var(--paper-raised, #ffffff);
+        --fail-node: var(--paper, #fdfcf9);
+        --fail-paper-2: var(--paper-muted, #f6f3ec);
+        --fail-ink: var(--ink, #22201b);
+        --fail-muted: var(--ink-muted, #6a6459);
+        --fail-soft: var(--ink-subtle, #7a7365);
+        --fail-rule: var(--line, #e7e1d5);
+        --fail-accent: var(--brand, #2f5fd0);
+        --fail-tint: var(--brand-light, #eef2fb);
+        --fail-sans: var(--font-body, "Inter Variable", Inter, -apple-system, "PingFang SC", "Noto Sans SC", sans-serif);
+        --fail-mono: var(--font-mono, ui-monospace, SFMono-Regular, Consolas, monospace);
+      }
+      #fail .fail-bg { fill: var(--fail-paper); }
+      #fail .fail-band { fill: var(--fail-paper-2); }
+      #fail .fail-step { fill: var(--fail-node); stroke: var(--fail-ink); stroke-width: 1; }
+      #fail .fail-end { fill: color-mix(in srgb, var(--fail-ink) 3%, var(--fail-node)); stroke: color-mix(in srgb, var(--fail-ink) 30%, transparent); stroke-width: 1; }
+      #fail .fail-focal { fill: var(--fail-tint); stroke: var(--fail-accent); stroke-width: 1.2; }
+      #fail .fail-arrow { fill: none; stroke: var(--fail-muted); stroke-width: 1.2; }
+      #fail .fail-dashed { stroke-dasharray: 5 4; }
+      #fail .fail-head { fill: var(--fail-muted); }
+      #fail .fail-mask { fill: var(--fail-paper); }
+      #fail .fail-name { font: 600 12px var(--fail-sans); fill: var(--fail-ink); }
+      #fail .fail-sub { font: 400 10px var(--fail-sans); fill: var(--fail-muted); }
+      #fail .fail-mono { font: 400 9px var(--fail-mono); fill: var(--fail-muted); }
+      #fail .fail-tag { font: 600 9px var(--fail-mono); fill: var(--fail-soft); letter-spacing: 0.08em; }
+      #fail .fail-label { font: 400 10px var(--fail-sans); fill: var(--fail-muted); }
+      #fail .fail-rule { stroke: var(--fail-rule); stroke-width: 0.8; }
+    </style>
+    <marker id="fail-arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+      <polygon class="fail-head" points="0 0, 8 3, 0 6"/>
+    </marker>
+  </defs>
+
+  <rect class="fail-bg" width="640" height="480"/>
+
+  <!-- 连线 -->
+  <path class="fail-arrow" d="M184 72 H240" marker-end="url(#fail-arrow)"/>
+  <path class="fail-arrow" d="M400 72 H456" marker-end="url(#fail-arrow)"/>
+  <path class="fail-arrow" d="M568 104 V176" marker-end="url(#fail-arrow)"/>
+  <path class="fail-arrow" d="M488 104 V120 Q488 128 480 128 H328 Q320 128 320 136 V176" marker-end="url(#fail-arrow)"/>
+  <path class="fail-arrow" d="M568 240 V312" marker-end="url(#fail-arrow)"/>
+  <path class="fail-arrow" d="M488 240 V268 Q488 276 480 276 H328 Q320 276 320 284 V312" marker-end="url(#fail-arrow)"/>
+  <path class="fail-arrow fail-dashed" d="M240 344 H184" marker-end="url(#fail-arrow)"/>
+
+  <rect class="fail-mask" x="576" y="134" width="56" height="12" rx="2"/>
+  <text class="fail-label" x="578" y="144">默认 restart</text>
+  <rect class="fail-mask" x="374" y="108" width="44" height="12" rx="2"/>
+  <text class="fail-label" x="396" y="118" text-anchor="middle">其他取值</text>
+  <rect class="fail-mask" x="576" y="270" width="28" height="12" rx="2"/>
+  <text class="fail-label" x="578" y="280">没到</text>
+  <rect class="fail-mask" x="390" y="256" width="28" height="12" rx="2"/>
+  <text class="fail-label" x="404" y="266" text-anchor="middle">到了</text>
+  <rect class="fail-mask" x="188" y="322" width="48" height="12" rx="2"/>
+  <text class="fail-label" x="212" y="332" text-anchor="middle">过期或清理</text>
+
+  <!-- 第一行 -->
+  <rect class="fail-step" x="24" y="40" width="160" height="64" rx="6"/>
+  <text class="fail-name" x="104" y="62" text-anchor="middle">monitor 结果不对</text>
+  <text class="fail-mono" x="104" y="78" text-anchor="middle">rc ≠ 期望值</text>
+  <text class="fail-sub" x="104" y="94" text-anchor="middle">本机 controld 写进 CIB</text>
+
+  <rect class="fail-focal" x="240" y="40" width="160" height="64" rx="6"/>
+  <text class="fail-name" x="320" y="62" text-anchor="middle">DC 记一次失败</text>
+  <text class="fail-mono" x="320" y="78" text-anchor="middle">fail-count +1</text>
+  <text class="fail-sub" x="320" y="94" text-anchor="middle">start、stop 失败记 INFINITY</text>
+
+  <rect class="fail-step" x="456" y="40" width="160" height="64" rx="6"/>
+  <text class="fail-name" x="536" y="62" text-anchor="middle">调度器重新计算</text>
+  <text class="fail-mono" x="536" y="78" text-anchor="middle">on-fail</text>
+  <text class="fail-sub" x="536" y="94" text-anchor="middle">先看失败该怎么处理</text>
+
+  <!-- 第二行 -->
+  <rect class="fail-step" x="240" y="176" width="160" height="64" rx="6"/>
+  <text class="fail-name" x="320" y="198" text-anchor="middle">按别的方式处理</text>
+  <text class="fail-mono" x="320" y="214" text-anchor="middle">stop · block · standby</text>
+  <text class="fail-sub" x="320" y="230" text-anchor="middle">还有 fence、demote、ignore</text>
+
+  <rect class="fail-focal" x="456" y="176" width="160" height="64" rx="6"/>
+  <text class="fail-name" x="536" y="198" text-anchor="middle">重启前先比阈值</text>
+  <text class="fail-mono" x="536" y="214" text-anchor="middle">migration-threshold</text>
+  <text class="fail-sub" x="536" y="230" text-anchor="middle">默认 INFINITY，即一百万次</text>
+
+  <!-- 第三行 -->
+  <rect class="fail-step" x="24" y="312" width="160" height="64" rx="6"/>
+  <text class="fail-name" x="104" y="334" text-anchor="middle">计数归零</text>
+  <text class="fail-mono" x="104" y="350" text-anchor="middle">failure-timeout</text>
+  <text class="fail-sub" x="104" y="366" text-anchor="middle">这个节点重新可用</text>
+
+  <rect class="fail-step" x="240" y="312" width="160" height="64" rx="6"/>
+  <text class="fail-name" x="320" y="334" text-anchor="middle">赶出这个节点</text>
+  <text class="fail-mono" x="320" y="350" text-anchor="middle">__fail_limit__</text>
+  <text class="fail-sub" x="320" y="366" text-anchor="middle">-INFINITY，换到别的节点</text>
+
+  <rect class="fail-step" x="456" y="312" width="160" height="64" rx="6"/>
+  <text class="fail-name" x="536" y="334" text-anchor="middle">原地重启</text>
+  <text class="fail-mono" x="536" y="350" text-anchor="middle">stop → start</text>
+  <text class="fail-sub" x="536" y="366" text-anchor="middle">分数没变，通常还在这里</text>
+
+  <!-- 图例 -->
+  <line class="fail-rule" x1="24" y1="440" x2="616" y2="440"/>
+  <rect class="fail-focal" x="24" y="452" width="24" height="12" rx="2"/>
+  <text class="fail-label" x="54" y="462">重点：失败次数记在哪，和阈值怎么比</text>
+</svg>
+  </div>
+</main>
+</body>
+</html>

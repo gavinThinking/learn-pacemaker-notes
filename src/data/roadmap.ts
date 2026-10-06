@@ -121,6 +121,7 @@ export const layers: Layer[] = [
         no: "11",
         title: "monitor 失败、on-fail、migration-threshold",
         summary: "一次 monitor 失败之后的完整处理路径，什么时候原地重启、什么时候换节点。",
+        note: "11-failure-handling",
       },
     ],
   },
