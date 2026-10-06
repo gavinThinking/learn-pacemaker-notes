@@ -34,6 +34,7 @@ export const layers: Layer[] = [
         no: "01",
         title: "Corosync knet 与 Totem 成员",
         summary: "节点怎么互相发现、心跳丢多久算掉线、成员变化怎么通知上层。",
+        note: "01-corosync-membership",
       },
       {
         no: "02",

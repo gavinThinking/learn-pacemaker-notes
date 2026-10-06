@@ -1,0 +1,159 @@
+---
+title: Corosync 怎么判断一个节点掉线了
+date: 2026-10-06
+summary: 两层心跳、一组由 token 推出来的超时，以及成员变化一路传到 Pacemaker 的路径。按默认配置，两节点集群里一个节点突然崩溃，大约 6.6 秒后另一边才把它划出成员名单。
+layer: L1
+stage: "01"
+upstream:
+  - label: corosync.conf(5)（Corosync v3.1.10）
+    href: https://github.com/corosync/corosync/blob/v3.1.10/man/corosync.conf.5
+  - label: exec/totemconfig.c：默认值与推导
+    href: https://github.com/corosync/corosync/blob/v3.1.10/exec/totemconfig.c#L318-L350
+  - label: exec/totemsrp.c：token 超时与成员状态机
+    href: https://github.com/corosync/corosync/blob/v3.1.10/exec/totemsrp.c#L1760-L1800
+  - label: lib/cluster/corosync.c：Pacemaker 收 quorum 通知
+    href: https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/cluster/corosync.c#L267-L334
+  - label: daemons/controld/controld_callbacks.c：controld 处理节点变化
+    href: https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/daemons/controld/controld_callbacks.c#L103
+---
+
+Pacemaker 自己不探测节点死活。它做的每个决定——谁当 DC（Designated Controller，集群里负责做决定的那个节点）、要不要 fencing、资源搬到哪——都建立在 Corosync 告诉它的成员名单上。所以第一站是弄清楚：Corosync 什么时候、凭什么认定一个节点不在了，又是怎么把这件事告诉 Pacemaker 的。
+
+本篇的版本：Corosync v3.1.10（Rocky Linux 9 自带的版本），Pacemaker 2.1.11。下面每条结论都附了这两个 tag 里的源码位置；只依据手册的会单独说明。
+
+## 一句话
+
+Corosync 有两层心跳。下层是 knet（Corosync 3 用的网络传输库）在每条网络链路上发 ping，管的是「这条线通不通」；上层是 Totem 成员协议里绕圈传递的 token（令牌），管的是「这个节点还在不在」。节点掉线由上层判定：token 超时后，剩下的节点再花一段 consensus 时间互相确认，才形成新的成员名单，然后通知 Pacemaker。
+
+## 两层心跳
+
+**knet 链路心跳。** 每对节点之间的每条链路，knet 定时发 ping、收 pong。一条链路在 `knet_ping_timeout` 内没收到 ping 就判为断开；连续收到 `knet_pong_count` 次 ping/pong 才重新算通。配了多条链路时，一条断了 knet 换另一条走，上层 Totem 感觉不到——这一层只决定消息走哪条线，不决定成员。
+
+**Totem token。** Totem 把所有成员排成一个环，一个 token 沿环传递，拿到 token 的节点才能发消息。token 在规定时间内没传回来，说明环上某处断了：要么有节点死了，要么网络把环切开了。这一层的超时才真正触发成员变化。
+
+## 所有超时都从 token 推出来
+
+`corosync.conf` 里只写了 `token`（或者什么都没写）时，其余超时都由它算出来。下表是 v3.1.10 的默认值，前提是配置里没有显式写这些项。
+
+<div class="table-scroll">
+
+| 参数 | 两节点默认值 | 怎么算的 | 作用 |
+| --- | --- | --- | --- |
+| `token` | 3000 ms | 基数 3000；三节点及以上再加 (节点数 − 2) × 650 | 多久收不到 token 算丢了 |
+| token 告警 | 2250 ms | token 的 75% | 先在日志里打一条告警，还不改成员 |
+| `token_retransmit` | 714 ms | token ÷ 4.2 | token 发出后多久没被下一个节点接住就重发 |
+| `join` | 50 ms | 固定 | 重组成员时多久广播一次 join |
+| `consensus` | 3600 ms | token × 1.2 | 重组成员时，等其他节点回应的最长时间 |
+| `knet_ping_timeout` | 1500 ms | token ÷ `knet_pong_count` | 一条链路多久没 ping 算断 |
+| `knet_ping_interval` | 750 ms | token ÷ (`knet_pong_count` × 2) | 链路 ping 的间隔 |
+| `knet_pong_count` | 2 | 固定 | 链路恢复要连续成功几次 |
+
+</div>
+
+几个读源码才看得出的细节：
+
+- 节点数加成写在 [`totemconfig.c` 第 318–329 行](https://github.com/corosync/corosync/blob/v3.1.10/exec/totemconfig.c#L318-L329)：判断条件是 nodelist 里的节点数大于 2，加完的结果写进 `runtime.config.totem.token`。所以 `corosync-cmapctl` 里看到的 runtime 值才是真正生效的 token，配置文件里写的只是基数。
+- `token_retransmit`、`consensus` 在加成**之后**计算（[第 343–350 行](https://github.com/corosync/corosync/blob/v3.1.10/exec/totemconfig.c#L343-L350)），会跟着节点数一起变大。
+- knet 的两个 ping 参数也一样：`totem_config_read` 先算 token（[第 2015 行](https://github.com/corosync/corosync/blob/v3.1.10/exec/totemconfig.c#L2015)），再调用 `calc_knet_ping_timers`（[第 1124–1150 行](https://github.com/corosync/corosync/blob/v3.1.10/exec/totemconfig.c#L1124-L1150)）用生效的 token 去除。头文件里的 `KNET_PING_INTERVAL 1000`、`KNET_PING_TIMEOUT 2000`（[第 89–92 行](https://github.com/corosync/corosync/blob/v3.1.10/exec/totemconfig.c#L89-L92)）在这条路径上用不到，只看定义会被误导。
+
+节点数对这几个值的影响：
+
+<div class="table-scroll">
+
+| 节点数 | token | consensus | knet 链路判断开 | knet ping 间隔 |
+| --- | --- | --- | --- | --- |
+| 2 | 3000 ms | 3600 ms | 1500 ms | 750 ms |
+| 3 | 3650 ms | 4380 ms | 1825 ms | 912 ms |
+| 5 | 4950 ms | 5940 ms | 2475 ms | 1237 ms |
+
+</div>
+
+手册对两节点有一句额外的话：consensus 大于 join、小于 token 也是安全的（见 corosync.conf(5) 的 `consensus` 条目）。也就是说两节点可以把 consensus 调到比默认小很多。这一条只依据手册，没在源码里找到对应的特殊处理。
+
+## 一个节点突然崩溃，接下来发生什么
+
+<Diagram
+  name="membership-change"
+  caption="两节点、默认配置下，一个节点崩溃后的成员变化路径。时间从最后一次收到 token 算起。"
+  verified="source"
+  rev="1"
+  gaps={[
+    "图里的时间是读源码推出来的，没有在真实集群上测过",
+    "没画网络分区（两边都活着但互相看不见）时两边各自形成成员的情况",
+    "Corosync 内部 sync 阶段（各服务同步状态）只画成一个框",
+  ]}
+/>
+
+Totem 的成员状态机只有四个状态（[`totemsrp.c` 第 278–281 行](https://github.com/corosync/corosync/blob/v3.1.10/exec/totemsrp.c#L278-L281)）：正常工作的 OPERATIONAL，收集成员的 GATHER，确认名单的 COMMIT，补发消息的 RECOVERY。
+
+**1. 告警（2250 ms）。** token 迟迟不来，到 75% 时打一条 notice 日志 `Token has not been received in … ms`（[第 1743–1758 行](https://github.com/corosync/corosync/blob/v3.1.10/exec/totemsrp.c#L1743-L1758)）。这一步只记日志，成员不变。线上看到这条但没有后续，通常是网络或调度抖了一下又恢复了。
+
+**2. token 超时（3000 ms）。** OPERATIONAL 状态下 token 定时器到期，打出 `A processor failed, forming new configuration: token timed out (3000ms), waiting 3600ms for consensus.`，检查一遍网卡，然后进入 GATHER（[第 1760–1775 行](https://github.com/corosync/corosync/blob/v3.1.10/exec/totemsrp.c#L1760-L1775)）。
+
+**3. 收集成员（再等 3600 ms）。** 进入 GATHER 时（[第 2165–2238 行](https://github.com/corosync/corosync/blob/v3.1.10/exec/totemsrp.c#L2165-L2238)）节点广播 join 消息，启动 50 ms 的 join 定时器和 3600 ms 的 consensus 定时器，同时停掉 token 相关的定时器。活着的节点互相交换 join，对「谁还在」达成一致。
+
+崩溃的节点不会回 join。它被划掉的时刻是 consensus 定时器到期：`memb_state_consensus_timeout_expired`（[第 1694–1719 行](https://github.com/corosync/corosync/blob/v3.1.10/exec/totemsrp.c#L1694-L1719)）把没给出确认的节点并进失败名单，再重新进入 GATHER。注意每次进入 GATHER 都会**重启** consensus 定时器，所以成员名单来回变化时，这一段可能不止 3600 ms。
+
+**4. 确认并恢复。** 名单一致后进入 COMMIT 确认，再进入 RECOVERY，把旧成员期间没送达的消息补齐，最后回到 OPERATIONAL，打出 `A new membership (…) was formed. Members left: 2`。如果离开的节点没有事先打招呼，还会多一条 `Failed to receive the leave message. failed: 2`（[第 2105–2145 行](https://github.com/corosync/corosync/blob/v3.1.10/exec/totemsrp.c#L2105-L2145)）。
+
+把这几段加起来，两节点默认配置下从最后一次收到 token 到形成新成员，大约是 3000 + 3600 = **6600 ms**，再加上 COMMIT、RECOVERY 的几轮消息往返。
+
+<div class="callout">
+<strong>这个 6.6 秒是推算，不是测量。</strong> 它来自上面几处源码的定时器设置，没有在真实集群上掐表。实际时间还取决于 consensus 定时器有没有被重启、网络往返多快。
+</div>
+
+### 正常关停为什么快得多
+
+`corosync` 正常退出时，`totemsrp_finalize` 先发一条 leave 消息（[第 1026–1031 行](https://github.com/corosync/corosync/blob/v3.1.10/exec/totemsrp.c#L1026-L1031)）。这条消息是一种特殊的 join：发送方把自己写进失败名单。其他节点收到后记下「这个节点是自己走的」（[第 4510–4519 行](https://github.com/corosync/corosync/blob/v3.1.10/exec/totemsrp.c#L4510-L4519)），并直接拿到了它离开的信息，不用等 token 超时才发现。新成员形成时，自己走的节点只出现在 `left:` 里，不会出现在 `Failed to receive the leave message` 里。
+
+所以排查日志时：
+
+- 只有 `left:`、没有 `failed:`：节点是正常关停的。
+- 有 `failed:`：节点是崩溃、断网，或者被 fencing 掉的——它没来得及打招呼。
+
+## 成员变化怎么传到 Pacemaker
+
+新成员形成后，Totem 先后发出两次成员变化回调：先是 TRANSITIONAL（新旧成员的交集，只剩下确定还在的节点），再是 REGULAR（完整的新成员）（[第 1987 行](https://github.com/corosync/corosync/blob/v3.1.10/exec/totemsrp.c#L1987)、[第 2021 行](https://github.com/corosync/corosync/blob/v3.1.10/exec/totemsrp.c#L2021)）。
+
+`exec/main.c` 的 `confchg_fn`（[第 380–410 行](https://github.com/corosync/corosync/blob/v3.1.10/exec/main.c#L380-L410)）收到后标记「正在同步」，再把变化转给 Corosync 内部的每个服务。和 Pacemaker 有关的是两个：
+
+<div class="table-scroll">
+
+| Corosync 服务 | 回答的问题 | Pacemaker 里接收的函数 | 改的是什么 |
+| --- | --- | --- | --- |
+| quorum 服务 | 哪些**节点**在成员里、这一侧有没有 quorum | `quorum_notification_cb` | 节点状态：member 或 lost |
+| CPG（closed process group，进程组消息） | 每个节点上的 **Pacemaker 进程**有没有加入组 | `pcmk__cpg_confchg_cb` | 节点上的进程是否在线 |
+
+</div>
+
+两者分开是有道理的：节点还在 Corosync 成员里，不代表上面的 Pacemaker 进程还活着。
+
+**quorum 通知。** Pacemaker 用 `quorum_trackstart(… CS_TRACK_CHANGES | CS_TRACK_CURRENT)` 订阅（[`corosync.c` 第 430 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/cluster/corosync.c#L430)）。回调 `quorum_notification_cb`（[第 267–334 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/cluster/corosync.c#L267-L334)）打出 `Quorum acquired` 或 `Quorum lost`，把这次名单里的节点都标成 member，然后调用 `pcmk__reap_unseen_nodes`（[`membership.c` 第 1311–1335 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/cluster/membership.c#L1311-L1335)）：这次名单里没出现的节点一律标成 lost。quorum 怎么算是下一篇的内容。
+
+**CPG 通知。** `pcmk__cpg_confchg_cb`（[`cpg.c` 第 689–780 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/cluster/cpg.c#L689-L780)）处理离开组的节点，把还在组里的节点标成进程在线。如果本节点自己不在组里，打出 `Local node was evicted from group`。
+
+**controld 怎么反应。** 两个通知最后都汇到 pacemaker-controld 的 `peer_update_callback`（[`controld_callbacks.c` 第 103 行起](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/daemons/controld/controld_callbacks.c#L103)）：
+
+- 掉的恰好是 DC：打出 `Our peer on the DC (…) is dead`，发起选举，选一个新 DC（[第 226–228 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/daemons/controld/controld_callbacks.c#L226-L228)）。
+- 本节点就是 DC、某个节点掉了而当前计划里并没有关停或 fencing 它的动作：打出 `Stonith/shutdown of node … was not expected`，中止正在执行的 transition（调度器算出来的一批动作），理由写 `Node failure`，再按新状态重新计算（[第 311–327 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/daemons/controld/controld_callbacks.c#L311-L327)）。
+
+quorum 变化另有一条路：DC 的 `crm_update_quorum`（[`controld_membership.c` 第 411–460 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/daemons/controld/controld_membership.c#L411-L460)）把 `have-quorum` 写进 CIB。失去 quorum 立即中止 transition；获得 quorum 则延迟 5 秒再重新计算。源码注释给的理由：几个节点常常差不多同时加入，如果第一个凑够 quorum 的节点一来就触发计算，后面还没连上的节点会被当成缺席而 fencing 掉。
+
+## 读日志时可以对照的顺序
+
+一次节点崩溃在存活节点上大致按这个顺序留下日志：
+
+1. `corosync`：`Token has not been received in 2250 ms`
+2. `corosync`：`A processor failed, forming new configuration: token timed out (3000ms), waiting 3600ms for consensus.`
+3. `corosync`：`A new membership (…) was formed. Members left: …`
+4. `corosync`：`Failed to receive the leave message. failed: …`
+5. Pacemaker 各守护进程：`Node … state is now lost`（[`membership.c` 第 1249 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/cluster/membership.c#L1249)）
+6. `pacemaker-controld`：掉的是 DC 时是 `Our peer on the DC (…) is dead` 和选举；自己是 DC 时是 `Stonith/shutdown of node … was not expected`
+
+这些文字都直接来自两个 tag 的源码，日志里括号和省略号处是节点名、编号这类变量。
+
+## 还没核对的
+
+- 网络分区：两边节点都活着、只是互相收不到 token 时，两边会各自形成一个成员名单。谁能继续干活由 quorum 决定，放在下一篇。
+- knet 链路断开但还有别的链路可用时，Totem 层是否完全无感，以及多链路之间怎么选。本篇只依据手册描述。
+- 上面所有时间都没有在真实集群上测过。

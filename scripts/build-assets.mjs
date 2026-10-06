@@ -113,11 +113,13 @@ async function renderDiagrams(browser, check) {
       return svg;
     }, [src, BODY_FONT]);
 
-    // 去掉 mermaid 写死的宽高，让 SVG 跟着容器自适应。
-    const responsive = svg
-      .replace(/\swidth="[^"]*"/, "")
-      .replace(/\sheight="[^"]*"/, ' width="100%"')
-      .replace("<svg ", `<svg data-${STAMP}="${sha}" `);
+    // 去掉 mermaid 写死的宽高，让 SVG 跟着容器自适应。只改根 <svg> 标签：
+    // 根标签通常没有 height，全文匹配会改到图里第一个 <rect>。
+    const responsive = svg.replace(/^<svg\b[^>]*>/, (tag) =>
+      tag
+        .replace(/\s(?:width|height)="[^"]*"/g, "")
+        .replace("<svg ", `<svg data-${STAMP}="${sha}" width="100%" `),
+    );
     await writeFile(outPath, responsive + "\n");
     console.log(`  ${file.padEnd(14)} → ${file.replace(/\.mmd$/, ".svg")}`);
   }
