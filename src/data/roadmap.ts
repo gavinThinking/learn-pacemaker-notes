@@ -94,6 +94,7 @@ export const layers: Layer[] = [
         title: "transition graph 与 crm_simulate",
         summary: "调度结果长什么样，怎样用上游的回归用例离线重放一次决策。",
         upstream: "cts/scheduler",
+        note: "08-transition-graph",
       },
     ],
   },

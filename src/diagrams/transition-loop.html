@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>一次 transition 从计算到执行，和它的离线重放</title>
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400&family=Inter:wght@400;600&display=swap" rel="stylesheet">
+  <style>
+    /* 和 src/styles/tokens.css 同一套令牌；嵌进站点后 SVG 直接用站点的变量。 */
+    :root {
+      --paper: #fdfcf9; --paper-raised: #ffffff; --paper-muted: #f6f3ec; --ink: #22201b; --ink-muted: #6a6459;
+      --ink-subtle: #7a7365; --line: #e7e1d5; --brand: #2f5fd0; --brand-light: #eef2fb;
+      --font-display: Fraunces, "Songti SC", "Noto Serif SC", Georgia, serif;
+      --font-body: Inter, -apple-system, BlinkMacSystemFont, "PingFang SC", "Noto Sans SC", sans-serif;
+      --font-mono: ui-monospace, SFMono-Regular, Consolas, monospace;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --paper: #16150f; --paper-raised: #1f1e17; --paper-muted: #1d1c15; --ink: #f2efe6; --ink-muted: #b3ac9c;
+        --ink-subtle: #8b8474; --line: #34322a; --brand: #8fabf0; --brand-light: #1c2237;
+      }
+    }
+    body { margin: 0; padding: 3rem 1rem; background: var(--paper-raised); color: var(--ink); font-family: var(--font-body); }
+    .frame { max-width: 640px; margin: 0 auto; }
+    .eyebrow { font: 500 0.66rem var(--font-mono); letter-spacing: 0.18em; text-transform: uppercase; color: var(--ink-subtle); margin: 0 0 0.5rem; }
+    h1 { font: 400 1.75rem/1.2 var(--font-display); margin: 0 0 1.5rem; }
+    .canvas { overflow-x: auto; }
+  </style>
+</head>
+<body>
+<main class="frame">
+  <p class="eyebrow">Data flow · 阶段 08</p>
+  <h1>一次 transition 从计算到执行，和它的离线重放</h1>
+  <div class="canvas">
+<svg id="tgl" viewBox="0 0 640 432" style="min-width: 560px" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="tgl-title tgl-desc">
+  <title id="tgl-title">一次 transition 从计算到执行，和它的离线重放</title>
+  <desc id="tgl-desc">上面两行是集群里的循环。DC 把 CIB 交给 schedulerd 计算，得到 transition graph，由 synapse 组成，每个 synapse 是一个动作加上它的前置条件。controld 执行这张图，前置条件都确认了的动作就发出去，由各节点执行，结果写回 CIB 的 status 段。执行中有新的结果或动作失败，controld 就 abort 这张图，等已发出的动作结束后重新计算。下面一行是离线重放：schedulerd 每次计算都把输入存成 pe-input-N.bz2，crm_simulate 读这份文件，用同一套代码计算，再用假的执行函数把结果写进一份假 CIB；上游回归用例逐字对比它输出的 summary、dot 和 exp 文件。</desc>
+  <defs>
+    <style>
+      #tgl {
+        --tgl-paper: var(--paper-raised, #ffffff);
+        --tgl-node: var(--paper, #fdfcf9);
+        --tgl-paper-2: var(--paper-muted, #f6f3ec);
+        --tgl-ink: var(--ink, #22201b);
+        --tgl-muted: var(--ink-muted, #6a6459);
+        --tgl-soft: var(--ink-subtle, #7a7365);
+        --tgl-rule: var(--line, #e7e1d5);
+        --tgl-accent: var(--brand, #2f5fd0);
+        --tgl-tint: var(--brand-light, #eef2fb);
+        --tgl-sans: var(--font-body, "Inter Variable", Inter, -apple-system, "PingFang SC", "Noto Sans SC", sans-serif);
+        --tgl-mono: var(--font-mono, ui-monospace, SFMono-Regular, Consolas, monospace);
+      }
+      #tgl .tgl-bg { fill: var(--tgl-paper); }
+      #tgl .tgl-band { fill: var(--tgl-paper-2); }
+      #tgl .tgl-step { fill: var(--tgl-node); stroke: var(--tgl-ink); stroke-width: 1; }
+      #tgl .tgl-end { fill: color-mix(in srgb, var(--tgl-ink) 3%, var(--tgl-node)); stroke: color-mix(in srgb, var(--tgl-ink) 30%, transparent); stroke-width: 1; }
+      #tgl .tgl-focal { fill: var(--tgl-tint); stroke: var(--tgl-accent); stroke-width: 1.2; }
+      #tgl .tgl-arrow { fill: none; stroke: var(--tgl-muted); stroke-width: 1.2; }
+      #tgl .tgl-dashed { stroke-dasharray: 5 4; }
+      #tgl .tgl-head { fill: var(--tgl-muted); }
+      #tgl .tgl-mask { fill: var(--tgl-paper); }
+      #tgl .tgl-name { font: 600 12px var(--tgl-sans); fill: var(--tgl-ink); }
+      #tgl .tgl-sub { font: 400 10px var(--tgl-sans); fill: var(--tgl-muted); }
+      #tgl .tgl-mono { font: 400 9px var(--tgl-mono); fill: var(--tgl-muted); }
+      #tgl .tgl-tag { font: 600 9px var(--tgl-mono); fill: var(--tgl-soft); letter-spacing: 0.08em; }
+      #tgl .tgl-label { font: 400 10px var(--tgl-sans); fill: var(--tgl-muted); }
+      #tgl .tgl-rule { stroke: var(--tgl-rule); stroke-width: 0.8; }
+    </style>
+    <marker id="tgl-arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+      <polygon class="tgl-head" points="0 0, 8 3, 0 6"/>
+    </marker>
+  </defs>
+
+  <rect class="tgl-bg" width="640" height="432"/>
+
+  <!-- 离线区 -->
+  <rect class="tgl-band" x="12" y="264" width="616" height="104" rx="6"/>
+  <text class="tgl-tag" x="616" y="282" text-anchor="end">离线重放</text>
+
+  <!-- 连线 -->
+  <path class="tgl-arrow" d="M184 68 H240" marker-end="url(#tgl-arrow)"/>
+  <path class="tgl-arrow" d="M400 68 H456" marker-end="url(#tgl-arrow)"/>
+  <path class="tgl-arrow" d="M536 96 V168" marker-end="url(#tgl-arrow)"/>
+  <path class="tgl-arrow" d="M456 196 H400" marker-end="url(#tgl-arrow)"/>
+  <path class="tgl-arrow" d="M240 196 H112 Q104 196 104 188 V96" marker-end="url(#tgl-arrow)"/>
+  <path class="tgl-arrow tgl-dashed" d="M488 168 V140 Q488 132 480 132 H344 Q336 132 336 124 V96" marker-end="url(#tgl-arrow)"/>
+  <path class="tgl-arrow tgl-dashed" d="M56 96 V296" marker-end="url(#tgl-arrow)"/>
+  <path class="tgl-arrow" d="M184 324 H240" marker-end="url(#tgl-arrow)"/>
+  <path class="tgl-arrow" d="M400 324 H456" marker-end="url(#tgl-arrow)"/>
+
+  <rect class="tgl-mask" x="128" y="174" width="96" height="12" rx="2"/>
+  <text class="tgl-label" x="176" y="184" text-anchor="middle">结果写进 status</text>
+  <rect class="tgl-mask" x="348" y="110" width="128" height="12" rx="2"/>
+  <text class="tgl-label" x="412" y="120" text-anchor="middle">有新结果就 abort，重算</text>
+  <rect class="tgl-mask" x="62" y="226" width="92" height="12" rx="2"/>
+  <text class="tgl-label" x="64" y="236">每次计算存一份</text>
+
+  <!-- 第一行 -->
+  <rect class="tgl-step" x="24" y="40" width="160" height="56" rx="6"/>
+  <text class="tgl-name" x="104" y="63" text-anchor="middle">CIB</text>
+  <text class="tgl-sub" x="104" y="81" text-anchor="middle">配置段 + status 段</text>
+
+  <rect class="tgl-step" x="240" y="40" width="160" height="56" rx="6"/>
+  <text class="tgl-name" x="320" y="63" text-anchor="middle">schedulerd 计算</text>
+  <text class="tgl-mono" x="320" y="81" text-anchor="middle">pcmk__schedule_actions</text>
+
+  <rect class="tgl-focal" x="456" y="40" width="160" height="56" rx="6"/>
+  <text class="tgl-name" x="536" y="63" text-anchor="middle">transition graph</text>
+  <text class="tgl-sub" x="536" y="81" text-anchor="middle">synapse = 动作 + 前置条件</text>
+
+  <!-- 第二行 -->
+  <rect class="tgl-step" x="456" y="168" width="160" height="56" rx="6"/>
+  <text class="tgl-name" x="536" y="191" text-anchor="middle">DC 上的 controld</text>
+  <text class="tgl-sub" x="536" y="209" text-anchor="middle">前置都确认了就发出</text>
+
+  <rect class="tgl-step" x="240" y="168" width="160" height="56" rx="6"/>
+  <text class="tgl-name" x="320" y="191" text-anchor="middle">各节点执行动作</text>
+  <text class="tgl-sub" x="320" y="209" text-anchor="middle">资源代理 / fencing 设备</text>
+
+  <!-- 离线行 -->
+  <rect class="tgl-end" x="24" y="296" width="160" height="56" rx="6"/>
+  <text class="tgl-name" x="104" y="319" text-anchor="middle">pe-input-N.bz2</text>
+  <text class="tgl-sub" x="104" y="337" text-anchor="middle">那一次计算的完整输入</text>
+
+  <rect class="tgl-focal" x="240" y="296" width="160" height="56" rx="6"/>
+  <text class="tgl-name" x="320" y="319" text-anchor="middle">crm_simulate -S</text>
+  <text class="tgl-sub" x="320" y="337" text-anchor="middle">同一套计算 + 假执行</text>
+
+  <rect class="tgl-end" x="456" y="296" width="160" height="56" rx="6"/>
+  <text class="tgl-name" x="536" y="319" text-anchor="middle">summary / dot / exp</text>
+  <text class="tgl-sub" x="536" y="337" text-anchor="middle">回归用例逐字对比</text>
+
+  <!-- 图例 -->
+  <line class="tgl-rule" x1="24" y1="392" x2="616" y2="392"/>
+  <rect class="tgl-focal" x="24" y="408" width="24" height="12" rx="2"/>
+  <text class="tgl-label" x="54" y="418">重点：图本身，和重放它的工具</text>
+  <line class="tgl-arrow tgl-dashed" x1="260" y1="414" x2="292" y2="414"/>
+  <text class="tgl-label" x="300" y="418">虚线：不是每次都走的路径</text>
+</svg>
+  </div>
+</main>
+</body>
+</html>

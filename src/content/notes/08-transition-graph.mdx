@@ -1,0 +1,350 @@
+---
+title: transition graph 与 crm_simulate：调度结果长什么样，怎么离线重放
+date: 2026-10-06
+summary: 调度器每算一次，产出一张 transition graph：一组 synapse，每个 synapse 是一个动作加上它要等的前置动作。DC 上的 controld 按图执行，前置都确认了的动作就发出；有动作失败或出现新结果，就 abort 这张图，等已发出的动作结束后重算。每次计算的输入存成 pe-input-N.bz2，crm_simulate 用同一套调度和执行代码离线重放它；上游 855 个回归用例就是这样逐字对比结果的。
+layer: L3
+stage: "08"
+upstream:
+  - label: lib/pacemaker/pcmk_scheduler.c：一次调度运算的全部步骤
+    href: https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pacemaker/pcmk_scheduler.c#L783-L823
+  - label: lib/pacemaker/pcmk_graph_producer.c：把动作写成 transition graph
+    href: https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pacemaker/pcmk_graph_producer.c#L1002-L1104
+  - label: lib/pacemaker/pcmk_graph_consumer.c：按图执行的通用逻辑
+    href: https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pacemaker/pcmk_graph_consumer.c#L416-L521
+  - label: tools/crm_simulate.c：离线重放工具的选项
+    href: https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/tools/crm_simulate.c#L231-L339
+  - label: cts/cts-scheduler.in：上游调度回归用例的运行和对比
+    href: https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/cts/cts-scheduler.in#L1462-L1645
+links:
+  - to: "03"
+    why: 调度器的输入就是整份 CIB——configuration 段给规则，status 段给每个资源的操作历史；pe-input 文件存的就是那一刻的 CIB。
+  - to: "05"
+    why: order 约束在图里变成 synapse 的 trigger；本篇的 VIP start 等的不是 promote 本身，而是 clone 层的 post-notify 伪动作。
+  - to: "06"
+    why: crm_simulate -s 打印的每一行分数，就是第 6 讲那张分数表在某一次运算里的实际取值。
+  - to: "07"
+    why: 第 7 讲的两节点冷启动用例，本篇拆开它的 29 个 synapse，看选主结果怎么变成一串有先后的动作。
+  - to: "09"
+    why: 只有 DC 上的 controld 向 schedulerd 要图并执行它；DC 换了，正在执行的图随之作废，新 DC 重新计算。
+  - to: "10"
+    why: 图里每个 rsc_op 都带着期望返回码；probe 期望 7（没在跑），资源代理返回别的值，controld 就判它失败。
+  - to: "11"
+    why: 动作失败时 controld abort 当前的图，失败记录写进 status 段，下一次计算才轮到 on-fail 和 migration-threshold 决定怎么处理。
+  - to: "12"
+    why: fencing 在图里是一个 crm_event，和资源动作一样有前置条件；被 fence 节点上资源的 stop 只是伪动作，靠 fencing 完成来确认。
+---
+
+前四讲讲的都是调度器怎么「想」：约束、分数、clone 实例怎么分、谁当主。想完之后要落成一串具体的动作——先 probe 哪些、谁先 start、promote 要等什么——这一串动作和它们之间的先后关系，就是 transition graph。本篇看这张图长什么样、DC 怎么按图执行、出错了怎么办，以及怎样把任意一次决策拿到集群外面原样重放。
+
+本篇的版本：Pacemaker 2.1.11。源码结论附链接，只依据文档的会单独说明。
+
+## 一句话
+
+集群每次状态变化，DC 都把整份 CIB 交给调度器算一张图；图里每个节点是一个动作和它要等的前置动作。controld 一边执行一边看结果，结果和预期不符就作废这张图重算。每次计算的输入都存成一个 bz2 文件，用 `crm_simulate` 能在任何机器上重放出同一张图——排查「集群为什么这么做」时，这比读日志可靠得多。
+
+## 调度器一次运算的顺序
+
+[`pcmk__schedule_actions`](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pacemaker/pcmk_scheduler.c#L783-L823) 按固定顺序走完 14 步，前几讲讲的内容各占其中一段：
+
+<div class="table-scroll">
+
+| 顺序 | 函数 | 做什么 | 对应讲义 |
+| --- | --- | --- | --- |
+| 1 | `unpack_cib` | 解析配置段和 status 段，算出每个节点、每个资源的当前状态 | 第 3 讲 |
+| 2–3 | `set_assignment_methods`、`apply_node_health` | 选分配算法，按节点健康属性扣分 | 第 4 讲 |
+| 4–6 | `unpack_constraints`、`apply_node_criteria`、`create_internal_constraints` | 读入约束，加上调度器自己需要的内部约束（例如 clone 实例之间） | 第 5 讲 |
+| 7 | `handle_rsc_config_changes` | 资源参数改过的，安排重新加载或重启 | — |
+| 8 | `assign_resources` | 按分数给每个资源选节点，promotable 在这里选主 | 第 6、7 讲 |
+| 9 | `schedule_resource_actions` | 对比「现在在哪」和「应该在哪」，生成 start / stop / promote 等动作 | — |
+| 10–11 | `order_remote_connection_actions`、`schedule_fencing_and_shutdowns` | 远程节点连接的顺序；要 fence 的节点、要关机的节点 | 第 12 讲 |
+| 12 | `apply_orderings` | 把 order 约束和内部顺序变成动作之间的先后 | 第 5 讲 |
+| 13–14 | `log_all_actions`、`pcmk__create_graph` | 记日志，把动作写成 transition graph | 本篇 |
+
+</div>
+
+前 8 步回答「资源该在哪」，第 9 步起回答「从现在的样子走到那个样子，要做哪些事、按什么顺序」。
+
+## transition graph 长什么样
+
+图是一段 XML，由 [`pcmk__create_graph`](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pacemaker/pcmk_graph_producer.c#L1002-L1104) 生成。每算一次，`transition_id` 加 1。
+
+<div class="table-scroll">
+
+| 元素 | 含义 |
+| --- | --- |
+| `transition_graph` | 根元素，带着执行这张图要用的集群选项（见下表） |
+| `synapse` | 图里的一个节点：一个动作，加上它要等的前置动作。可以带 `priority` |
+| `action_set` | 这个 synapse 要做的动作，里面是下面三种之一 |
+| `rsc_op` | 资源动作：probe、start、stop、monitor、promote、notify 等，发给某个节点执行 |
+| `crm_event` | 集群动作：fencing、节点关机、清失败计数、删资源历史 |
+| `pseudo_event` | 伪动作：不在任何节点上执行，只用来汇合顺序，比如「clone 全部启动完成」 |
+| `inputs` / `trigger` | 前置条件：每个 `trigger` 指向另一个动作，它确认了，本动作才能发出 |
+
+</div>
+
+动作是哪一种由 [`create_graph_action`](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pacemaker/pcmk_graph_producer.c#L396-L490) 决定：fencing 是 `crm_event`（被标成伪动作的 fencing 除外），关机、清失败计数、删历史也是 `crm_event`，其他伪动作是 `pseudo_event`，剩下的都是 `rsc_op`。
+
+根元素上的属性：
+
+<div class="table-scroll">
+
+| 属性 | 来源 | 作用 |
+| --- | --- | --- |
+| `cluster-delay` | 集群选项，默认 60s | 每个动作的等待上限 = 动作自己的超时 + 这个值 |
+| `stonith-timeout` | 集群选项 | fencing 动作的超时 |
+| `failed-stop-offset` | 固定 `INFINITY` | stop 失败后加到失败计数上的值 |
+| `failed-start-offset` | `start-failure-is-fatal=true` 时 `INFINITY`，否则 `1` | start 失败后加到失败计数上的值（第 11 讲） |
+| `batch-limit` | 集群选项，默认 0 | 整张图同时在途的动作上限，0 表示按负载动态决定 |
+| `migration-limit` | 集群选项，默认 -1，只在大于 0 时写出 | 每个节点同时进行的迁移数上限 |
+| `transition_id` | 每次加 1 | 这张图的编号，日志里到处引用它 |
+
+</div>
+
+默认值来自 [lib/common/options.c](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/common/options.c#L380-L426)。
+
+看一个真的 synapse。第 7 讲那个两节点冷启动用例里，VIP 在 srv1 上启动是这样写的（来自上游回归用例的期望输出 `exp/promoted-score-startup.exp`，略去属性细节）：
+
+```xml
+<synapse id="26">
+  <action_set>
+    <rsc_op id="34" operation="start" operation_key="pgsql-master-ip_start_0" on_node="srv1"/>
+  </action_set>
+  <inputs>
+    <trigger><rsc_op id="2" operation="monitor" operation_key="pgsql-master-ip_monitor_0" on_node="srv1"/></trigger>
+    <trigger><rsc_op id="4" operation="monitor" operation_key="pgsql-master-ip_monitor_0" on_node="srv2"/></trigger>
+    <trigger><pseudo_event id="27" operation="notified" operation_key="pgsql-ha_confirmed-post_notify_promoted_0"/></trigger>
+  </inputs>
+</synapse>
+```
+
+三个前置条件：
+
+1. 两个节点上对 VIP 的 probe（`monitor_0`，interval 为 0 的一次性检查）都确认了——确认 VIP 现在哪儿都没在跑，才能启动，否则可能出现两份；
+2. 伪动作「pgsql-ha 的 promote 后通知已确认」完成了。
+
+配置里写的是「VIP 等 pgsql-ha promote 完成再启动」，到了图里，前置条件不是 `pgsqld:0` 的 promote 本身，而是 clone 层面汇合点：promote 完成 → 汇合为「promoted」伪动作 → 给每个实例发 post-notify → 汇合为「post-notify 已确认」。VIP 等的是这条链的最后一环。
+
+## 哪些动作进图
+
+调度器内部生成的动作比图里多。[`should_add_action_to_graph`](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pacemaker/pcmk_graph_producer.c#L501-L581) 过滤：
+
+- 不可执行的（runnable 为假，例如目标节点不可用）不进；
+- 可选的（optional，例如资源已经在跑，start 就是可选的）不进，除非标了必须进图；
+- 不受管理的资源（`is-managed=false`）只留 monitor，其他动作不进；
+- 伪动作、fencing、节点关机总是进；
+- 目标节点离线或状态不明（unclean）却还要发给它的动作，记为错误。
+
+动作之间的先后关系也有过滤：[`should_add_input_to_graph`](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pacemaker/pcmk_graph_producer.c#L611-L760) 丢掉那些不需要变成 trigger 的顺序，例如前置动作本身没进图。
+
+synapse 的 `priority` 取资源优先级和动作优先级里大的那个，只在大于 0 时写出（[`create_graph_synapse`](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pacemaker/pcmk_graph_producer.c#L851-L868)）。这个数下面讲 abort 时要用。
+
+## controld 怎么执行这张图
+
+DC 上的 controld 收到图后（[`do_te_invoke`](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/daemons/controld/controld_transition.c#L125-L176)，日志 `Processing graph N (ref=...) derived from ...`），反复调用 [`pcmk__execute_graph`](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pacemaker/pcmk_graph_consumer.c#L416-L521)，每一轮把所有能发的 synapse 发出去。一个 synapse 能发，要同时满足（[`should_fire_synapse`](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pacemaker/pcmk_graph_consumer.c#L232-L281)）：
+
+1. 每个 trigger 指向的动作都已确认，而且没有失败（个别动作标了允许失败的除外）；
+2. 图没被 abort，或者这个 synapse 的 priority 不低于 abort 时设的门槛；
+3. 没有超过并发上限。
+
+并发上限有两层：
+
+<div class="table-scroll">
+
+| 层次 | 上限 | 源码 |
+| --- | --- | --- |
+| 整张图 | `batch-limit` 个在途动作；默认 0 表示不设固定上限 | [graph_consumer L455-L460](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pacemaker/pcmk_graph_consumer.c#L455-L460) |
+| 每个节点 | 默认 CPU 核数 × 2，可用 `node-action-limit` 改；节点负载高时按比例压低 | [controld_throttle.c L523-L558](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/daemons/controld/controld_throttle.c#L523-L558) |
+
+</div>
+
+每个节点的上限随负载变：没有负载时是满额，低负载减半，中负载四分之一，高负载和极高负载只允许 1 个。节点负载由各节点的 controld 自己测量，报给 DC。
+
+动作发出后，controld 给它起一个计时器，时长 = 动作超时 + `cluster-delay`（[`te_start_action_timer`](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/daemons/controld/controld_te_actions.c#L26-L31)）。默认下一个 20 秒超时的 start，DC 最多等 80 秒。到点还没收到结果，日志写 `did not send ... result ... within ...ms (action timeout plus cluster-delay)`，并以 `Action lost` 为原因 abort 当前的图（[`action_timer_callback`](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/daemons/controld/controld_te_callbacks.c#L667-L712)）。
+
+结果怎么对回到图里的动作？每个动作发出时带一个 transition key，格式是 `动作编号:图编号:期望返回码:DC 的 UUID`（[lib/common/actions.c L403-L409](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/common/actions.c#L403-L409)）。执行结果写进 status 段时也带着它，controld 据此找到是哪张图的哪个动作，并比较实际返回码和期望返回码。probe 的期望返回码是 7（「没在运行」，第 10 讲），所以图里 probe 动作都带着 `CRM_meta_op_target_rc="7"`。
+
+## 失败和 abort
+
+结果回来后，[`process_graph_event`](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/daemons/controld/controld_te_events.c#L423-L612) 处理：
+
+- 实际返回码等于期望返回码：动作确认，日志 `Transition N action M (... on ...) confirmed`；
+- 不等：动作标为失败，日志 `expected '...' but got '...'`，然后以 `Event failed` 为原因 abort，abort 门槛设为这个 synapse 的 priority + 1（[L558-L559](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/daemons/controld/controld_te_events.c#L558-L559)）；
+- 结果不属于当前图（旧图留下的、别的 DC 发的、迟到的）：也会 abort，让调度器基于新的 status 段重算。
+
+abort 不是立刻停下一切（[`abort_transition_graph`](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/daemons/controld/controld_te_utils.c#L343-L507)，日志 `Transition N aborted by ...`）：已经发出的动作照常等结果；还没发的，priority 低于门槛的不再发，高于门槛的照发。一般 synapse 的 priority 是 0，失败后门槛是 1，于是普通动作都停了。但 clone 的 post-notify 和「全部启动完成 / 全部停止完成」这类伪动作的 priority 是 INFINITY（1000000，见 [pe_notif.c L472-L485](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pengine/pe_notif.c#L472-L485)、[pcmk_sched_instances.c L1003](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pacemaker/pcmk_sched_instances.c#L1003)），它们仍会执行——已经开始的 start / promote，资源代理还要收到配套的 post 通知，否则实例之间对「谁是主」的认识会不一致。上面那个用例里，synapse 0 就是一个 post-notify，`priority="1000000"`。
+
+一张图跑完时，日志给出它的结局（[graph_consumer L491-L508](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pacemaker/pcmk_graph_consumer.c#L491-L508)）：
+
+<div class="table-scroll">
+
+| 结局 | 含义 |
+| --- | --- |
+| Complete | 所有 synapse 都执行并确认了 |
+| Stopped | 被 abort 过，有 synapse 因此跳过，在途动作都已结束 |
+| Terminated | 没被 abort，却还有 synapse 的前置永远满足不了（比如前置失败了），执行不下去 |
+
+</div>
+
+日志格式是 `Transition N (Complete=…, Pending=…, Fired=…, Skipped=…, Incomplete=…, Source=…): <结局>`。只要不是 Complete，controld 就让调度器基于最新的 CIB 再算一次。上一张图还没执行完、新算出的图已经送到时，日志写 `Another transition is already active`，controld 以 `Transition Active` 为原因 abort 当前的图，等它结束后再算（[controld_transition.c L138-L142](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/daemons/controld/controld_transition.c#L138-L142)）。
+
+所以集群从来不是「算一次、做完」，而是「算一张图 → 做到哪算哪 → 有变化就重算」的循环。每次重算都从完整的 CIB 出发，不需要记住上一张图做到哪了——做完的动作结果已经在 status 段里。
+
+<Diagram
+  name="transition-loop"
+  caption="上面两行是集群里的循环：CIB 交给 schedulerd 算出图，DC 的 controld 按图发出动作，结果写回 status 段；有新结果或失败就 abort 重算。下面一行是离线重放：每次计算的输入存成 pe-input 文件，crm_simulate 用同一套代码重算并假执行。"
+  verified="source"
+  rev="1"
+  gaps={[
+    "schedulerd 和 controld 之间的 IPC 消息格式没有画出，也没有对照代码。",
+    "节点负载怎么测量、怎么从各节点报给 DC 没有核对。",
+  ]}
+/>
+
+## 每次计算的输入存在哪
+
+调度器（schedulerd）每次计算，在 [`handle_pecalc_request`](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/daemons/schedulerd/schedulerd_messages.c#L43-L181) 里把这次的输入 CIB 存成文件，放在 `/var/lib/pacemaker/pengine/`。按计算结果的严重程度分三组编号，各自循环覆盖：
+
+<div class="table-scroll">
+
+| 文件名 | 什么时候写 | 默认保留个数 | 集群选项 |
+| --- | --- | --- | --- |
+| `pe-input-N.bz2` | 正常计算 | 4000 | `pe-input-series-max` |
+| `pe-warn-N.bz2` | 计算中有警告 | 5000 | `pe-warn-series-max` |
+| `pe-error-N.bz2` | 计算中有错误 | 不限 | `pe-error-series-max` |
+
+</div>
+
+输入和上一次完全一样（摘要相同）时不重复存。日志里 `Calculated transition N, saving inputs in /var/lib/pacemaker/pengine/pe-input-M.bz2`（[`pcmk__log_transition_summary`](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pacemaker/pcmk_graph_producer.c#L943-L970)）把图编号和文件对上。排查一次故障时，先在 DC 的日志里找到出问题的那张图，再按这一行拿到它的输入文件。
+
+注意这个文件存的是「输入」，不是图本身。图可以从输入重新算出来——前提是用同一个版本的 Pacemaker。
+
+## crm_simulate：离线重放
+
+`crm_simulate` 读一份 CIB（实时集群或文件），跑同一个 `pcmk__schedule_actions`，再用同一个 `pcmk__execute_graph` 执行出来的图——只是执行函数换成了假的：不真的调用资源代理，而是把「执行成功」或你指定的结果写进一份内存里的 CIB（[`pcmk__simulate_transition`](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pacemaker/pcmk_simulate.c#L751-L803)）。所以它看到的就是集群会看到的。
+
+常用选项（[tools/crm_simulate.c L231-L339](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/tools/crm_simulate.c#L231-L339)）：
+
+<div class="table-scroll">
+
+| 选项 | 作用 |
+| --- | --- |
+| `-x <文件>` / `-L` | 输入：读一个 CIB 文件（可直接是 `.bz2`）/ 读当前集群 |
+| `-R` | 只算，不执行，打印要做的动作 |
+| `-S` | 算出图并假执行，打印执行后的集群状态 |
+| `-s` | 打印分配分数和 promotion score |
+| `-u` / `-d` / `-f <节点>` | 假设节点上线 / 正常下线 / 故障，再计算 |
+| `-i <操作>` | 往 status 段注入一条操作历史，再计算 |
+| `-F <操作>` | 假执行时让某个动作返回指定结果 |
+| `-q` / `-t <时间>` | 假设有 / 没有 quorum；假设当前时间（规则里用到时间时） |
+| `-G` / `-D` / `-O` | 把图存成 XML / Graphviz dot 文件 / 把执行后的 CIB 存下来 |
+
+</div>
+
+`-i` 和 `-F` 的操作写法是 `资源_动作_间隔毫秒@节点=返回码`。例如帮助文本里的例子（只依据帮助文本，没有实际运行）：
+
+```sh
+crm_simulate -LS --op-inject memcached:0_monitor_20000@bart.example.com=7 \
+  --op-fail memcached:0_stop_0@fred.example.com=1 --save-output /tmp/memcached-test.xml
+```
+
+意思是：读当前集群，假设 bart 上 memcached:0 的 20 秒 monitor 返回了 7（没在运行），算出应对方案并假执行，其中 fred 上的 stop 返回 1（失败），把最终状态存下来。`-F` 让动作失败时，假执行把 abort 门槛设为 INFINITY（[pcmk_simulate.c L630-L645](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pacemaker/pcmk_simulate.c#L630-L645)），也就是比真集群更严，连 INFINITY 优先级的通知都不再发。
+
+`-D` 存的 dot 文件可以用 Graphviz 画出来，颜色有约定（[`write_sim_dotfile`](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pacemaker/pcmk_simulate.c#L223-L315)）：
+
+<div class="table-scroll">
+
+| 样式 | 含义 |
+| --- | --- |
+| 绿色粗体 | 进了图、会执行的动作 |
+| 橙色字 | 伪动作 |
+| 蓝色 | 可选动作，没进图 |
+| 红色 | 不可执行的动作 |
+| 虚线箭头 | 可选的顺序，不构成 trigger |
+
+</div>
+
+## 回归用例：上游怎么用 crm_simulate 测调度器
+
+上游源码 `cts/scheduler/` 下有 855 个输入用例。[`cts-scheduler`](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/cts/cts-scheduler.in#L1462-L1645) 对每个用例跑两次 crm_simulate：
+
+1. `-x 输入 -S`，输出写成 summary；
+2. `-x 输入 -D dot -G 图 -sSQ`，得到 dot、图 XML 和分数。
+
+再把这四样和仓库里存着的期望文件逐字对比，有一处不同就算失败：
+
+<div class="table-scroll">
+
+| 目录 | 存的是 |
+| --- | --- |
+| `xml/` | 输入 CIB |
+| `summary/` | 集群状态、Transition Summary、假执行过程、执行后的状态 |
+| `exp/` | 期望的 transition graph |
+| `dot/` | 期望的 dot 图 |
+| `scores/` | 期望的分配分数和 promotion score |
+
+</div>
+
+所以改调度器的任何代码，都要让这 855 个决策保持不变，或者在提交里写清楚哪些变了、为什么。反过来，想知道某个场景下 Pacemaker 2.1.11 会怎么做，先在这里找一个最像的用例，看它的期望输出，比自己搭集群快。
+
+拿第 7 讲的 `promoted-score-startup`（用例说明：「Use permanent promoted scores without LRM history」，两节点、没有任何操作历史、promotion score 写在永久属性里）来看。summary 开头的 Transition Summary：
+
+```text
+  * Promote    pgsqld:0            ( Stopped -> Promoted srv1 )
+  * Start      pgsqld:1            (                     srv2 )
+  * Start      pgsql-master-ip     (                     srv1 )
+```
+
+三行结论，背后是 29 个 synapse：17 个真实动作，12 个伪动作。按依赖展开是这样的顺序：
+
+1. 每个资源在每个节点上 probe 一次（期望返回 7）；
+2. clone 启动前通知 → 汇合 → 「start」伪动作 → 两个实例各自 start；
+3. 「running」伪动作汇合 → 启动后通知 → 汇合；
+4. 提升前通知 → 汇合；
+5. 「promote」伪动作 → srv1 上 pgsqld:0 promote → 「promoted」汇合 → 提升后通知 → 汇合；
+6. srv1 上 VIP start（就是上面那个 synapse 26）；
+7. 各自的周期 monitor：主 15 秒、备 16 秒、VIP 10 秒。
+
+分数文件里，pgsqld:0 在 srv1 上 1001、srv2 上 1000；VIP 在 srv1 上 1001、srv2 上 -INFINITY。VIP 只剩 srv1 可选，正是第 5 讲的 colocation 跟着 Promoted 角色走的结果。
+
+## 回到主线
+
+主线里 node1（主库）断电，node2 上是备库。从调度器角度看：
+
+1. corosync 报告 node1 离开，DC（如果 DC 就是 node1，先选新 DC，第 9 讲）abort 当前的图，请求重新计算；
+2. 调度器读到 node1 状态不明，在图里放一个 fencing 的 `crm_event`；node1 上主库的 stop 是伪动作，等 fencing 完成才算确认（第 12 讲）；
+3. 第 7 讲的选主落在 node2，图里接着是：提升前通知 → node2 上 promote → 提升后通知 → VIP 在 node2 上 start；
+4. controld 按 trigger 顺序发出动作；fencing 成功、promote 返回 0、VIP start 返回 0，图的结局是 Complete；
+5. 整个过程的输入留在 DC 的 `pe-input-N.bz2` 里，事后用 `crm_simulate -Sx` 能原样重放，看当时每个分数是多少。
+
+如果 promote 返回了非 0，第 4 步就变成：动作失败 → abort → 图的结局是 Stopped → 带着这条失败记录重新计算，进入第 11 讲的处理路径。
+
+## 读日志时看哪里
+
+<div class="table-scroll">
+
+| 想知道 | DC 日志里找 |
+| --- | --- |
+| 算出了第几张图、输入存在哪 | `Calculated transition N, saving inputs in .../pe-input-M.bz2` |
+| controld 开始执行 | `Processing graph N (ref=...) derived from ...` |
+| 某个动作成功了 | `Transition N action M (... on ...) confirmed` |
+| 某个动作结果不对 | `Transition N action M (... on ...): expected '...' but got '...'` |
+| 图为什么被中断 | `Transition N aborted by ...` 和后面的原因 |
+| 动作结果迟迟不回 | `did not send ... result ... within ...ms (action timeout plus cluster-delay)` |
+| 一张图的结局 | `Transition N (Complete=…, Pending=…, …): Complete / Stopped / Terminated` |
+
+</div>
+
+拿到 pe-input 文件之后：
+
+```sh
+crm_simulate -Sx /var/lib/pacemaker/pengine/pe-input-123.bz2 -s
+```
+
+就能看到那一刻的分数和要做的动作。
+
+## 还没核对的
+
+- 本篇引用的图、summary 和分数都来自上游仓库里存着的回归用例期望文件，没有在本机实际运行 crm_simulate。
+- `crm_simulate` 帮助文本里的 `--op-inject` 例子只依据帮助文本。
+- 节点负载级别怎么测量、阈值多少（`load-threshold` 选项）本篇没有展开。
+- `pe-warn` / `pe-error` 两组文件在什么具体条件下写，只对照了编号和保留个数，没有逐个追到产生警告的代码。
