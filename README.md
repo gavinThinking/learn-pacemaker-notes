@@ -30,5 +30,15 @@
 | `src/data/site.ts` | 站名、上游版本、导航 |
 | `src/data/roadmap.ts` | 6 层 14 个阶段，每个阶段的手记和可选的平台验证 |
 | `src/content/notes/` | 手记（Markdown / MDX），字段见 `src/content.config.ts` |
+| `src/data/sketches.ts` | 图解：每张图的标题、要点、所属层和阶段、已知问题 |
+| `src/assets/sketches/` | 图解的 WebP，文件名就是 slug；缩略图由构建生成 |
 | `src/diagrams/` | 架构图：`.mmd` 是源，`.svg` 由 `npm run assets` 生成 |
 | `designs/og-card/og.html` | 分享卡片的源 |
+
+## 加一张图解
+
+1. 原图放进 `images/`（不入库），转成 WebP：`cwebp -q 82 -m 6 images/原图.png -o src/assets/sketches/<slug>.webp`
+2. 在 `src/data/sketches.ts` 加一条同名 `slug`，写标题、一句话要点、所属层（`group`）和阶段（`stage`）；
+   图里画错的地方写进 `caveats`。
+3. 图片和条目对不上时构建会失败。加完它会出现在 `/sketches/`、详情页，以及学习路线对应那一层下面。
+   手记里要嵌图用 `<Sketch slug="..." />`。

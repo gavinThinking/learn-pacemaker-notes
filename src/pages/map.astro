@@ -1,5 +1,6 @@
 ---
 import Diagram from "../components/Diagram.astro";
+import Sketch from "../components/Sketch.astro";
 import Base from "../layouts/Base.astro";
 import { site } from "../data/site";
 ---
@@ -31,6 +32,8 @@ import { site } from "../data/site";
       ]}
       caption="依据：Pacemaker Explained 2.1 §1.2.2「Pacemaker Architecture」。守护进程目录在上游 Pacemaker-2.1.11 tag 的 daemons/ 下。"
     />
+
+    <Sketch slug="state-decision-action" label="直觉版" />
 
     <article class="prose">
       <h2>守护进程对照</h2>

@@ -3,3 +3,5 @@ dist/
 .astro/
 .vercel/
 .DS_Store
+# 图解的原始 PNG，只留本机；入库的是 src/assets/sketches/ 下的 WebP
+images/

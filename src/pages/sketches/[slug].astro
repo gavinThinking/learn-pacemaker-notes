@@ -1,0 +1,164 @@
+---
+import { Image } from "astro:assets";
+
+import SketchGrid from "../../components/SketchGrid.astro";
+import Base from "../../layouts/Base.astro";
+import { layers } from "../../data/roadmap";
+import { groupLabel, sketches, type SketchWithImage } from "../../data/sketches";
+
+export function getStaticPaths() {
+  return sketches.map((s, i) => ({
+    params: { slug: s.slug },
+    props: { s, prev: sketches[i - 1], next: sketches[i + 1] },
+  }));
+}
+
+interface Props {
+  s: SketchWithImage;
+  prev?: SketchWithImage;
+  next?: SketchWithImage;
+}
+
+const { s, prev, next } = Astro.props;
+const stage = layers.flatMap((l) => l.stages).find((x) => x.no === s.stage);
+const siblings = sketches.filter((x) => x.group === s.group && x.slug !== s.slug);
+---
+
+<Base title={`${s.title} · 图解`} description={s.point}>
+  <div class="shell sketch-page">
+    <a class="sketch-page__img" href={s.image.src}>
+      <Image
+        src={s.image}
+        alt={s.point}
+        widths={[600, 900, s.image.width]}
+        sizes="(max-width: 860px) 100vw, 560px"
+        loading="eager"
+      />
+    </a>
+
+    <div class="sketch-page__text">
+      <p class="eyebrow">图解 · {groupLabel(s.group)}</p>
+      <h1 class="display">{s.title}</h1>
+      <p class="lede">{s.point}</p>
+
+      {
+        stage && (
+          <p class="sketch-page__stage">
+            对应阶段 <a href={`/roadmap/#${s.group}`}>{stage.no} · {stage.title}</a>
+            {stage.note && (
+              <>
+                ，<a href={`/notes/${stage.note}/`}>读这一阶段的手记 →</a>
+              </>
+            )}
+          </p>
+        )
+      }
+
+      <div class="gaps">
+        <span class="gaps__label">已知问题</span>
+        <ul class="gaps__list">
+          {
+            s.caveats && s.caveats.length > 0
+              ? s.caveats.map((c) => <li>{c}</li>)
+              : <li>目前没发现画错的地方，但也还没有逐项对照源码。</li>
+          }
+        </ul>
+      </div>
+
+      <p class="sketch-page__note">
+        AI 生成的概念图，用来建立直觉，不作为证据；细节以手记和 Pacemaker 2.1.11 源码为准。
+        <a href={s.image.src}>看原尺寸</a>
+      </p>
+
+      <nav class="sketch-page__pager" aria-label="上一张和下一张">
+        {prev ? <a href={`/sketches/${prev.slug}/`}>← {prev.title}</a> : <span />}
+        {next ? <a href={`/sketches/${next.slug}/`}>{next.title} →</a> : <span />}
+      </nav>
+    </div>
+  </div>
+
+  {
+    siblings.length > 0 && (
+      <section class="shell section">
+        <h2 class="section__title">同一组的其他图</h2>
+        <SketchGrid items={siblings} compact />
+        <p style="margin-top:1.4rem">
+          <a href="/sketches/">← 回到全部图解</a>
+        </p>
+      </section>
+    )
+  }
+</Base>
+
+<style>
+  .sketch-page {
+    display: grid;
+    grid-template-columns: minmax(0, 560px) minmax(0, 1fr);
+    gap: 3rem;
+    align-items: start;
+    padding-block: 3.5rem;
+  }
+
+  .sketch-page__img :global(img) {
+    display: block;
+    width: 100%;
+    height: auto;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-elevated);
+  }
+
+  .sketch-page__text {
+    position: sticky;
+    top: 5.5rem;
+  }
+
+  .sketch-page__text h1 {
+    font-size: clamp(1.7rem, 3.6vw, 2.3rem);
+    margin-block: 1rem 0.9rem;
+  }
+
+  .sketch-page__stage {
+    margin: 1.2rem 0 0;
+    font-size: 0.92rem;
+    color: var(--ink-muted);
+  }
+
+  .sketch-page__note {
+    margin: 1.4rem 0 0;
+    font-size: 0.82rem;
+    color: var(--ink-subtle);
+  }
+
+  .sketch-page__pager {
+    display: flex;
+    justify-content: space-between;
+    gap: 1rem;
+    margin-top: 2rem;
+    padding-top: 1.2rem;
+    border-top: 1px solid var(--line);
+    font-size: 0.88rem;
+  }
+
+  .sketch-page__pager a:last-child {
+    text-align: right;
+  }
+
+  @media (max-width: 860px) {
+    .sketch-page {
+      grid-template-columns: 1fr;
+      gap: 2rem;
+      padding-block: 2rem;
+    }
+
+    .sketch-page__text {
+      position: static;
+    }
+  }
+
+  @media (prefers-color-scheme: dark) {
+    .sketch-page__img :global(img) {
+      filter: brightness(0.9);
+    }
+  }
+</style>

@@ -533,6 +533,8 @@ a.card:hover {
 .part {
   padding-block: 2.6rem;
   border-top: 1px solid var(--line-soft);
+  /* 从图解页按层跳过来时，标题不被顶栏挡住。 */
+  scroll-margin-top: 4.5rem;
 }
 
 .part__head {
@@ -568,6 +570,18 @@ a.card:hover {
   font-size: 0.72rem;
   color: var(--ink-subtle);
   white-space: nowrap;
+}
+
+.part__sketches {
+  margin: 1.4rem 0 0 5.2rem;
+}
+
+.part__sketches-label {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 0.66rem;
+  letter-spacing: 0.14em;
+  color: var(--ink-subtle);
 }
 
 .cp {
@@ -642,6 +656,9 @@ a.card:hover {
 }
 
 @media (max-width: 720px) {
+  .part__sketches {
+    margin-left: 0;
+  }
   .part__head,
   .cp {
     grid-template-columns: 2.6rem minmax(0, 1fr);

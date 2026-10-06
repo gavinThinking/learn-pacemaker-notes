@@ -1,0 +1,151 @@
+---
+/**
+ * 图解缩略图网格。每张图链到自己的详情页，不用灯箱：零 JS，每张图有固定地址可以引用。
+ * 缩略图由 astro:assets 在构建期生成多尺寸 srcset，列表页不下载原图。
+ */
+import { Image } from "astro:assets";
+
+import type { SketchWithImage } from "../data/sketches";
+
+interface Props {
+  items: readonly SketchWithImage[];
+  /** 学习路线这类嵌入场景：图更小，不显示要点。 */
+  compact?: boolean;
+}
+
+const { items, compact = false } = Astro.props;
+---
+
+<ul class:list={["sketch-grid", { "sketch-grid--compact": compact }]}>
+  {
+    items.map((s) => (
+      <li>
+        <a class="sketch-tile" href={`/sketches/${s.slug}/`}>
+          <Image
+            src={s.image}
+            alt={s.point}
+            widths={compact ? [240, 400] : [320, 560]}
+            sizes={compact ? "(max-width: 600px) 45vw, 180px" : "(max-width: 600px) 45vw, 260px"}
+            loading="lazy"
+          />
+          <span class="sketch-tile__body">
+            <span class="sketch-tile__meta">{s.stage ? `阶段 ${s.stage}` : "总览"}</span>
+            <span class="sketch-tile__title">{s.title}</span>
+            {!compact && <span class="sketch-tile__point">{s.point}</span>}
+          </span>
+        </a>
+      </li>
+    ))
+  }
+</ul>
+
+<style>
+  .sketch-grid {
+    list-style: none;
+    margin: 1.6rem 0 0;
+    padding: 0;
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+    gap: 1.25rem;
+  }
+
+  .sketch-grid--compact {
+    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+    gap: 0.9rem;
+    margin-top: 0.8rem;
+  }
+
+  .sketch-tile {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    background: var(--paper-raised);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow-card);
+    overflow: hidden;
+    text-decoration: none;
+    color: inherit;
+    transition:
+      transform 0.18s ease,
+      box-shadow 0.18s ease;
+  }
+
+  .sketch-tile:hover {
+    transform: translateY(-2px);
+    box-shadow: var(--shadow-elevated);
+  }
+
+  .sketch-tile :global(img) {
+    display: block;
+    width: 100%;
+    height: auto;
+    aspect-ratio: 3 / 4;
+    object-fit: cover;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .sketch-tile__body {
+    display: grid;
+    gap: 0.35rem;
+    padding: 0.9rem 1rem 1.05rem;
+  }
+
+  .sketch-grid--compact .sketch-tile__body {
+    padding: 0.6rem 0.7rem 0.75rem;
+  }
+
+  .sketch-tile__meta {
+    font-family: var(--font-mono);
+    font-size: 0.68rem;
+    letter-spacing: 0.1em;
+    color: var(--ink-subtle);
+  }
+
+  .sketch-tile__title {
+    font-family: var(--font-display);
+    font-weight: 600;
+    font-size: 1rem;
+    line-height: 1.35;
+  }
+
+  .sketch-grid--compact .sketch-tile__title {
+    font-size: 0.86rem;
+  }
+
+  .sketch-tile__point {
+    color: var(--ink-muted);
+    font-size: 0.85rem;
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+
+  /* 手机上单列一张图就占满一屏，改两列、去掉要点，方便扫一眼找图。 */
+  @media (max-width: 600px) {
+    .sketch-grid {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 0.8rem;
+    }
+
+    .sketch-tile__body {
+      padding: 0.6rem 0.7rem 0.75rem;
+    }
+
+    .sketch-tile__title {
+      font-size: 0.86rem;
+    }
+
+    .sketch-tile__point {
+      display: none;
+    }
+  }
+
+  /* 图是浅色纸张底，深色模式下压一点亮度，避免整屏只有图在发光。 */
+  @media (prefers-color-scheme: dark) {
+    .sketch-tile :global(img) {
+      filter: brightness(0.88);
+    }
+  }
+</style>

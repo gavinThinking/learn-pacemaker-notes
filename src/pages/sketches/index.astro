@@ -1,0 +1,76 @@
+---
+import SketchGrid from "../../components/SketchGrid.astro";
+import Base from "../../layouts/Base.astro";
+import { sketchGroups, sketches } from "../../data/sketches";
+---
+
+<Base
+  title="图解"
+  description="学 Pacemaker 时用 AI 生成的概念插图，按学习路线的层分组：先建立直觉，细节以手记和源码为准。"
+>
+  <div class="shell page-head">
+    <p class="eyebrow">图解 · {sketches.length} 张</p>
+    <h1 class="display">先有画面，再读源码</h1>
+    <p class="lede">
+      读资料时让 AI 把一个机制画成一张图，帮自己先抓住「谁负责什么、东西往哪流」。
+      按学习路线的层分组；点开每张图能看大图、一句话要点，以及图里已知画得不准的地方。
+    </p>
+    <p class="callout" style="margin-top:1.4rem;max-width:var(--measure)">
+      <strong>这些图不是证据。</strong>它们由 AI 生成，没有对照 Pacemaker 2.1.11 源码，
+      细节可能错。机制以对应阶段的手记和源码链接为准；发现画错的地方会记在那张图的「已知问题」里。
+    </p>
+
+    <nav class="sketch-toc" aria-label="图解分组">
+      {
+        sketchGroups.map((g) => (
+          <a href={`#${g.id}`}>
+            {g.id === "overview" ? "开篇" : g.id} · {g.items.length}
+          </a>
+        ))
+      }
+    </nav>
+  </div>
+
+  <div class="shell">
+    {
+      sketchGroups.map((g) => (
+        <section class="part" id={g.id}>
+          <header class="part__head">
+            <span class="part__no">{g.id === "overview" ? "00" : g.id}</span>
+            <div>
+              <h2 class="part__name">{g.name}</h2>
+              <p class="part__goal">{g.goal}</p>
+            </div>
+            <span class="part__count">{g.items.length} 张</span>
+          </header>
+          <SketchGrid items={g.items} />
+        </section>
+      ))
+    }
+  </div>
+</Base>
+
+<style>
+  .sketch-toc {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    margin-top: 1.6rem;
+  }
+
+  .sketch-toc a {
+    font-family: var(--font-mono);
+    font-size: 0.76rem;
+    color: var(--ink-muted);
+    text-decoration: none;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    padding: 0.3rem 0.8rem;
+    background: var(--paper-raised);
+  }
+
+  .sketch-toc a:hover {
+    color: var(--brand);
+    border-color: var(--brand-soft);
+  }
+</style>

@@ -1,7 +1,9 @@
 ---
+import SketchGrid from "../components/SketchGrid.astro";
 import Base from "../layouts/Base.astro";
 import { layers, progress, statusLabels, statusOf } from "../data/roadmap";
 import { site } from "../data/site";
+import { sketches } from "../data/sketches";
 ---
 
 <Base
@@ -31,7 +33,7 @@ import { site } from "../data/site";
   <div class="shell">
     {
       layers.map((layer) => (
-        <section class="part">
+        <section class="part" id={layer.no}>
           <header class="part__head">
             <span class="part__no">{layer.no}</span>
             <div>
@@ -64,6 +66,13 @@ import { site } from "../data/site";
               </span>
             </article>
           ))}
+
+          {sketches.some((s) => s.group === layer.no) && (
+            <div class="part__sketches">
+              <p class="part__sketches-label">这一层的图解</p>
+              <SketchGrid items={sketches.filter((s) => s.group === layer.no)} compact />
+            </div>
+          )}
         </section>
       ))
     }

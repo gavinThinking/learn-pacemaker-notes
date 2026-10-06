@@ -28,6 +28,7 @@ export const site = {
   nav: [
     { href: "/map/", label: "架构地图" },
     { href: "/roadmap/", label: "学习路线" },
+    { href: "/sketches/", label: "图解" },
     { href: "/notes/", label: "手记" },
     { href: "/platform/", label: "实验平台" },
     { href: "/evidence/", label: "证据边界" },

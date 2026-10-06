@@ -1,0 +1,109 @@
+---
+/**
+ * 在页面或手记里嵌一张图解：左图右文，文字里带要点、已知问题和详情页链接。
+ * 手记（MDX）里用法：<Sketch slug="cib-world-model" />
+ */
+import { Image } from "astro:assets";
+
+import { sketchBySlug } from "../data/sketches";
+
+interface Props {
+  slug: string;
+  /** 图上方的小标题，默认「图解」。 */
+  label?: string;
+}
+
+const { slug, label = "图解" } = Astro.props;
+const s = sketchBySlug(slug);
+---
+
+<figure class="sketch">
+  <a class="sketch__img" href={`/sketches/${s.slug}/`}>
+    <Image
+      src={s.image}
+      alt={s.point}
+      widths={[360, 640]}
+      sizes="(max-width: 700px) 90vw, 320px"
+      loading="lazy"
+    />
+  </a>
+  <figcaption>
+    <span class="sketch__label">{label}</span>
+    <p class="sketch__title">{s.title}</p>
+    <p class="sketch__point">{s.point}</p>
+    {
+      s.caveats && s.caveats.length > 0 && (
+        <div class="gaps">
+          <span class="gaps__label">图里不准的地方</span>
+          <ul class="gaps__list">
+            {s.caveats.map((c) => (
+              <li>{c}</li>
+            ))}
+          </ul>
+        </div>
+      )
+    }
+    <p class="sketch__note">
+      AI 生成的概念图，没有对照源码。<a href={`/sketches/${s.slug}/`}>看大图 →</a>
+    </p>
+  </figcaption>
+</figure>
+
+<style>
+  .sketch {
+    display: grid;
+    grid-template-columns: minmax(0, 320px) minmax(0, 1fr);
+    gap: 1.6rem;
+    align-items: start;
+    margin: 2rem 0;
+    padding: 1.4rem;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-lg);
+    background: var(--paper-raised);
+  }
+
+  .sketch__img :global(img) {
+    display: block;
+    width: 100%;
+    height: auto;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+  }
+
+  .sketch__label {
+    font-family: var(--font-mono);
+    font-size: 0.66rem;
+    letter-spacing: 0.14em;
+    color: var(--ink-subtle);
+  }
+
+  .sketch__title {
+    font-family: var(--font-display);
+    font-weight: 600;
+    font-size: 1.2rem;
+    margin: 0.4rem 0 0.6rem;
+  }
+
+  .sketch__point {
+    margin: 0;
+    color: var(--ink-muted);
+  }
+
+  .sketch__note {
+    margin: 1.1rem 0 0;
+    font-size: 0.82rem;
+    color: var(--ink-subtle);
+  }
+
+  @media (max-width: 700px) {
+    .sketch {
+      grid-template-columns: 1fr;
+    }
+  }
+
+  @media (prefers-color-scheme: dark) {
+    .sketch__img :global(img) {
+      filter: brightness(0.88);
+    }
+  }
+</style>
