@@ -1,0 +1,98 @@
+<svg data-lpn-source-sha="8097000c248fc7ec" width="100%" id="csp" viewBox="0 0 640 548" style="min-width: 560px" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="csp-title csp-desc">
+  <title id="csp-title">调度器一次运算里，三类约束在哪一步生效</title>
+  <desc id="csp-desc">调度器读入 CIB 后按顺序做六件事。第一步解析配置和约束。第二步算每个资源在每个节点上的分数，location 约束和 stickiness 在这里加减分。第三步逐个资源选节点，colocation 在这里起作用：先给被跟随的资源选好节点，再按它的位置改跟随者的分数。第四步按分配结果生成 start、stop、promote、demote 动作。第五步 order 约束给这些动作排先后，不影响资源放在哪。第六步输出 transition graph，交给 controld 执行。</desc>
+  <defs>
+    <style>
+      #csp {
+        --csp-paper: var(--paper-raised, #ffffff);
+        --csp-node: var(--paper, #fdfcf9);
+        --csp-paper-2: var(--paper-muted, #f6f3ec);
+        --csp-ink: var(--ink, #22201b);
+        --csp-muted: var(--ink-muted, #6a6459);
+        --csp-soft: var(--ink-subtle, #7a7365);
+        --csp-rule: var(--line, #e7e1d5);
+        --csp-accent: var(--brand, #2f5fd0);
+        --csp-tint: var(--brand-light, #eef2fb);
+        --csp-sans: var(--font-body, "Inter Variable", Inter, -apple-system, "PingFang SC", "Noto Sans SC", sans-serif);
+        --csp-mono: var(--font-mono, ui-monospace, SFMono-Regular, Consolas, monospace);
+      }
+      #csp .csp-bg { fill: var(--csp-paper); }
+      #csp .csp-band { fill: var(--csp-paper-2); }
+      #csp .csp-step { fill: var(--csp-node); stroke: var(--csp-ink); stroke-width: 1; }
+      #csp .csp-end { fill: color-mix(in srgb, var(--csp-ink) 3%, var(--csp-node)); stroke: color-mix(in srgb, var(--csp-ink) 30%, transparent); stroke-width: 1; }
+      #csp .csp-focal { fill: var(--csp-tint); stroke: var(--csp-accent); stroke-width: 1.2; }
+      #csp .csp-arrow { fill: none; stroke: var(--csp-muted); stroke-width: 1.2; }
+      #csp .csp-dashed { stroke-dasharray: 5 4; }
+      #csp .csp-head { fill: var(--csp-muted); }
+      #csp .csp-mask { fill: var(--csp-paper); }
+      #csp .csp-name { font: 600 12px var(--csp-sans); fill: var(--csp-ink); }
+      #csp .csp-sub { font: 400 10px var(--csp-sans); fill: var(--csp-muted); }
+      #csp .csp-mono { font: 400 9px var(--csp-mono); fill: var(--csp-muted); }
+      #csp .csp-tag { font: 600 9px var(--csp-mono); fill: var(--csp-soft); letter-spacing: 0.08em; }
+      #csp .csp-label { font: 400 10px var(--csp-sans); fill: var(--csp-muted); }
+      #csp .csp-rule { stroke: var(--csp-rule); stroke-width: 0.8; }
+    </style>
+    <marker id="csp-arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+      <polygon class="csp-head" points="0 0, 8 3, 0 6"/>
+    </marker>
+  </defs>
+
+  <rect class="csp-bg" width="640" height="548"/>
+
+  <!-- 连线（先画，压在框下面） -->
+  <path class="csp-arrow" d="M174 76 V104" marker-end="url(#csp-arrow)"/>
+  <path class="csp-arrow" d="M174 156 V184" marker-end="url(#csp-arrow)"/>
+  <path class="csp-arrow" d="M174 236 V264" marker-end="url(#csp-arrow)"/>
+  <path class="csp-arrow" d="M174 316 V344" marker-end="url(#csp-arrow)"/>
+  <path class="csp-arrow" d="M174 396 V424" marker-end="url(#csp-arrow)"/>
+  <path class="csp-arrow csp-dashed" d="M344 130 H324" marker-end="url(#csp-arrow)"/>
+  <path class="csp-arrow csp-dashed" d="M344 210 H324" marker-end="url(#csp-arrow)"/>
+  <path class="csp-arrow csp-dashed" d="M344 370 H324" marker-end="url(#csp-arrow)"/>
+
+  <!-- 主流程 -->
+  <rect class="csp-end" x="24" y="24" width="300" height="52" rx="20"/>
+  <text class="csp-name" x="174" y="46" text-anchor="middle">读入 CIB，解析约束</text>
+  <text class="csp-mono" x="174" y="63" text-anchor="middle">unpack_cib · pcmk__unpack_constraints</text>
+
+  <rect class="csp-step" x="24" y="104" width="300" height="52" rx="6"/>
+  <text class="csp-name" x="174" y="126" text-anchor="middle">算每个资源在每个节点上的分数</text>
+  <text class="csp-mono" x="174" y="143" text-anchor="middle">apply_node_criteria</text>
+
+  <rect class="csp-focal" x="24" y="184" width="300" height="52" rx="6"/>
+  <text class="csp-name" x="174" y="206" text-anchor="middle">逐个资源选节点</text>
+  <text class="csp-mono" x="174" y="223" text-anchor="middle">assign_resources · pcmk__primitive_assign</text>
+
+  <rect class="csp-step" x="24" y="264" width="300" height="52" rx="6"/>
+  <text class="csp-name" x="174" y="286" text-anchor="middle">按分配结果生成动作</text>
+  <text class="csp-sub" x="174" y="303" text-anchor="middle">start · stop · promote · demote</text>
+
+  <rect class="csp-step" x="24" y="344" width="300" height="52" rx="6"/>
+  <text class="csp-name" x="174" y="366" text-anchor="middle">给动作排先后</text>
+  <text class="csp-mono" x="174" y="383" text-anchor="middle">pcmk__apply_orderings</text>
+
+  <rect class="csp-end" x="24" y="424" width="300" height="52" rx="20"/>
+  <text class="csp-name" x="174" y="446" text-anchor="middle">输出 transition graph</text>
+  <text class="csp-sub" x="174" y="463" text-anchor="middle">交给 controld 执行（第 8、9 讲）</text>
+
+  <!-- 三类约束 -->
+  <text class="csp-tag" x="352" y="114">RSC_LOCATION</text>
+  <text class="csp-label" x="352" y="134">给资源在某个节点上加分或减分</text>
+  <text class="csp-label" x="352" y="150">stickiness 也在这一步加到当前节点</text>
+
+  <text class="csp-tag" x="352" y="194">RSC_COLOCATION</text>
+  <text class="csp-label" x="352" y="214">先给被跟随的资源选好节点</text>
+  <text class="csp-label" x="352" y="230">再按它的位置改跟随者的分数</text>
+
+  <text class="csp-tag" x="352" y="354">RSC_ORDER</text>
+  <text class="csp-label" x="352" y="374">只排动作先后，不影响放在哪</text>
+  <text class="csp-label" x="352" y="390">默认对称：先启 A 后启 B，就先停 B 后停 A</text>
+
+  <!-- 图例 -->
+  <line class="csp-rule" x1="24" y1="504" x2="616" y2="504"/>
+  <rect class="csp-end" x="24" y="520" width="24" height="12" rx="6"/>
+  <text class="csp-label" x="54" y="530">开始 / 结果</text>
+  <line class="csp-arrow csp-dashed" x1="136" y1="526" x2="160" y2="526"/>
+  <text class="csp-label" x="168" y="530">约束作用的位置</text>
+  <rect class="csp-focal" x="260" y="520" width="24" height="12" rx="2"/>
+  <text class="csp-label" x="290" y="530">资源放在哪，在这一步定下来</text>
+</svg>

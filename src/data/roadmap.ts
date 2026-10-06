@@ -75,6 +75,7 @@ export const layers: Layer[] = [
         title: "location / colocation / order 约束",
         summary: "三类约束各自表达什么，组合起来时谁先谁后。",
         upstream: "daemons/schedulerd",
+        note: "05-constraints",
       },
       {
         no: "06",

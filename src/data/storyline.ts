@@ -36,7 +36,7 @@ export const storyline: Step[] = [
   },
   {
     stages: ["05", "06", "07", "08"],
-    what: "调度器按约束和分数重新计算，得出新的 transition：在活着的节点上提升主库。",
+    what: "调度器按约束和分数重新计算，得出新的 transition：在活着的节点上提升主库；colocation 让 VIP 跟着新主库走，order 让 VIP 等 promote 完成再启动。",
   },
   {
     stages: ["04", "10"],

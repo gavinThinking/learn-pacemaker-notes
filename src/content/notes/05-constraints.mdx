@@ -1,0 +1,323 @@
+---
+title: 约束：location 改分数，colocation 跟着走，order 只排先后
+date: 2026-10-06
+summary: Pacemaker 用三类约束描述资源该放哪、和谁放一起、按什么顺序动。它们在调度器的一次运算里作用在三个不同的位置：location 在选节点之前给节点加减分；colocation 在选节点的过程中，先给被跟随的资源选好位置，再改跟随者的分数；order 等所有动作都生成之后才给它们排先后，完全不影响资源放在哪。group 是两者的简写：成员之间隐含 INFINITY 的 colocation 和顺序启动、逆序停止。
+layer: L3
+stage: "05"
+upstream:
+  - label: lib/pacemaker/pcmk_scheduler.c：调度器一次运算的步骤
+    href: https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pacemaker/pcmk_scheduler.c#L783-L823
+  - label: lib/pacemaker/pcmk_sched_location.c：location 约束怎么改分数
+    href: https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pacemaker/pcmk_sched_location.c#L671-L724
+  - label: lib/pacemaker/pcmk_sched_colocation.c：colocation 怎么改跟随者的分数
+    href: https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pacemaker/pcmk_sched_colocation.c#L1350-L1440
+  - label: lib/pacemaker/pcmk_sched_ordering.c：order 约束的种类和对称
+    href: https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pacemaker/pcmk_sched_ordering.c#L74-L225
+  - label: lib/pacemaker/pcmk_sched_nodes.c：分数相同时怎么挑节点
+    href: https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pacemaker/pcmk_sched_nodes.c#L202-L310
+links:
+  - to: "06"
+    why: 本篇只讲三类约束各往分数表里加什么；分数怎么相加、INFINITY 怎么算、stickiness 为什么能把资源留在原地，在第 6 讲。
+  - to: "04"
+    why: location 规则按节点属性给分，读的就是 attrd 写进 CIB 的临时属性和 nodes 段的永久属性。
+  - to: "07"
+    why: colocation 可以只跟随 Promoted 角色（with-rsc-role），这是把 VIP 绑在主库上的写法；clone 实例怎么分配在第 7 讲。
+  - to: "08"
+    why: order 约束最后变成 transition graph 里动作之间的边，第 8 讲用 crm_simulate 把这张图画出来看。
+  - to: "03"
+    why: 三类约束都写在 CIB configuration 段的 constraints 下面，调度器每次运算都从当前 CIB 重新解析一遍。
+  - to: "09"
+    why: 调度器只在 DC 上算；算出来的动作和先后关系由 DC 的 controld 按图下发执行。
+  - to: "13"
+    why: no-quorum-policy=freeze 时调度器不让资源升级角色，即使约束分数指向别处也不动。
+  - to: "14"
+    why: PAF 部署里 VIP 和主库之间的 colocation 和 order，就是本篇「回到主线」那两条约束。
+---
+
+前四讲讲的是集群怎么知道「现在是什么样」：成员、法定人数、CIB、节点属性。从本篇开始讲调度器（pacemaker-schedulerd）怎么决定「应该变成什么样」。调度器读进一份 CIB，算出每个资源该放在哪个节点、处于什么角色，再把「现在」和「应该」之间的差别变成一串动作。
+
+管理员告诉调度器意图的主要办法是约束。本篇讲三类：location（放哪）、colocation（和谁放一起）、order（按什么顺序动）。分数的加法规则和 stickiness 留到第 6 讲，本篇只讲每类约束往分数表里加了什么、在哪一步加。
+
+本篇的版本：Pacemaker 2.1.11。源码结论附链接，只依据文档的会单独说明。
+
+## 一句话
+
+三类约束看起来都是「资源之间的关系」，但调度器在三个不同的时刻处理它们：location 在选节点之前改分数，colocation 在选节点时改分数，order 在选完节点、生成动作之后才排先后。所以 order 约束写得再多，也不会让资源换一个节点；想让两个资源在一起，必须写 colocation。
+
+## 三类约束对比
+
+<div class="table-scroll">
+
+| | location | colocation | order |
+| --- | --- | --- | --- |
+| 回答的问题 | 资源 A 能不能、多想放在节点 X | 资源 A 要不要和资源 B 在同一个节点 | A 的动作要不要在 B 的动作之前 |
+| CIB 里的元素 | `rsc_location` | `rsc_colocation` | `rsc_order` |
+| 改的是什么 | A 在 X 上的分数 | A 在每个节点上的分数，按 B 放在哪算 | 动作之间的先后关系 |
+| 在哪一步生效 | 选节点之前 | 选节点的过程中 | 生成所有动作之后 |
+| 影响资源放在哪 | 是 | 是 | 否 |
+| 典型写法 | `pgsql` 在 `node3` 上 `-INFINITY` | `vip` 跟 `pgsql` 的 Promoted 角色，`INFINITY` | 先 promote `pgsql`，再 start `vip` |
+
+</div>
+
+分数是整数，正数表示「想」，负数表示「不想」。`INFINITY` 在 Pacemaker 里是 1000000，`+INFINITY` 是「必须」，`-INFINITY` 是「禁止」。资源在某个节点上的总分是负数，就不会放在那里（[`pcmk__assign_resource`，`pcmk_sched_resource.c` 第 404–511 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pacemaker/pcmk_sched_resource.c#L404-L511)）。
+
+## 调度器一次运算里，约束在哪一步生效
+
+调度器的入口 `pcmk__schedule_actions` 按固定顺序做这些事（[`pcmk_scheduler.c` 第 783–823 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pacemaker/pcmk_scheduler.c#L783-L823)）：
+
+<div class="table-scroll">
+
+| 顺序 | 函数 | 做什么 | 哪类约束在这里起作用 |
+| --- | --- | --- | --- |
+| 1 | `unpack_cib` | 读节点、资源、状态，算出每个资源现在在哪 | — |
+| 2 | `pcmk__unpack_constraints` | 解析所有约束 | 全部解析，但还不生效 |
+| 3 | `apply_node_criteria` | 给每个资源在每个节点上算初始分数 | location、stickiness、失败次数 |
+| 4 | `assign_resources` | 逐个资源选节点 | colocation |
+| 5 | `schedule_resource_actions` | 对比现在和应该，生成 start、stop、promote、demote | — |
+| 6 | `schedule_fencing_and_shutdowns` | 生成 fencing 和节点关机动作 | — |
+| 7 | `pcmk__apply_orderings` | 给动作连上先后关系 | order |
+| 8 | `pcmk__create_graph` | 输出 transition graph | — |
+
+</div>
+
+<Diagram
+  name="scheduler-constraint-phases"
+  caption="location 在选节点之前改分数，colocation 在选节点时改分数，order 等动作都生成之后才排先后。"
+  verified="source"
+  rev="1"
+  gaps={[
+    "没画 rsc_ticket：它按 ticket 是否授予来禁止资源运行，在多站点（booth）部署里用",
+    "没画调度器内部隐含的约束，例如 clone 和 group 自动生成的 colocation 和 order（pcmk__create_internal_constraints）",
+    "没画 Pacemaker Remote 连接资源：它们在第 4 步最先分配",
+  ]}
+/>
+
+第 2 步按 CIB 里的类型分批解析：先 `rsc_order`，再 `rsc_colocation`，再 `rsc_location`，最后 `rsc_ticket`（[`pcmk__unpack_constraints`，`pcmk_sched_constraints.c` 第 60–107 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pacemaker/pcmk_sched_constraints.c#L60-L107)）。解析只是把约束整理成调度器内部的结构，真正改分数、连动作在后面几步。
+
+## location：在选节点之前改分数
+
+### 起点：每个节点都是 0 分
+
+集群属性 `symmetric-cluster` 默认是 `true`，含义是「资源默认可以放在任何节点」。调度器的做法是：解析资源时就给它在每个节点上记 0 分（[`complex.c` 第 999–1001 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pengine/complex.c#L999-L1001)）。0 分不是负数，所以哪里都能放。
+
+`symmetric-cluster=false` 时没有这一步，资源只能放在 location 约束明确给了分的节点上，这叫 opt-in 集群。
+
+### 两种写法
+
+`rsc_location` 有两种写法（[`unpack_rsc_location`，`pcmk_sched_location.c` 第 229–340 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pacemaker/pcmk_sched_location.c#L229-L340)）：
+
+```xml
+<!-- 直接写节点和分数 -->
+<rsc_location id="loc-pgsql-not-node3" rsc="pgsql" node="node3" score="-INFINITY"/>
+
+<!-- 写规则：每个节点算一次，满足条件的节点加分 -->
+<rsc_location id="loc-pgsql-ssd" rsc="pgsql">
+  <rule id="loc-pgsql-ssd-rule" score="200">
+    <expression id="loc-pgsql-ssd-expr" attribute="disk" operation="eq" value="ssd"/>
+  </rule>
+</rsc_location>
+```
+
+规则写法对每个节点各求值一次，条件成立的节点加上 `score`（[`generate_location_rule`，第 111–226 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pacemaker/pcmk_sched_location.c#L111-L226)）。条件里的 `attribute` 读的是节点属性，第 4 讲那张合并后的属性表。
+
+规则也可以不写固定分数，写 `score-attribute="某个属性名"`，直接用这个节点上该属性的值当分数。节点上没有这个属性时，分数是 `-INFINITY`，也就是禁止（[`get_node_score`，第 24–56 行，第 47 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pacemaker/pcmk_sched_location.c#L24-L56)）。这一点容易踩坑：本想「有属性的节点加分」，结果变成「没有属性的节点禁止」。
+
+规则里有日期条件时，调度器会记下规则下一次可能变化的时刻，到时候再算一次。
+
+### 加到哪里
+
+解析出来的每条 location 最终由 `pcmk__apply_location` 加到资源的分数表 `allowed_nodes` 上（[第 671–724 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pacemaker/pcmk_sched_location.c#L671-L724)）。有两点：
+
+- **可以只针对一个角色**。约束带 `role="Promoted"` 时，只有资源这次要成为 Promoted 才算这条分数。
+- **可以控制探测**。`resource-discovery` 决定调度器要不要在这个节点上跑一次 probe（探测资源是否已经在运行）：`always` 默认，`never` 不探测，`exclusive` 只在这类约束覆盖的节点上探测。同一个资源有多条约束时，`exclusive` 优先于 `never`，`never` 优先于 `always`。
+
+同一步里还会加上 stickiness（资源当前所在节点的加分）和失败次数到达阈值后的 `-INFINITY`（[`apply_node_criteria`，`pcmk_scheduler.c` 第 279–295 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pacemaker/pcmk_scheduler.c#L279-L295)）。这两项分别是第 6 讲和第 11 讲的内容。
+
+## colocation：在选节点时，先选被跟随的，再改跟随者
+
+### 两个角色
+
+```xml
+<rsc_colocation id="col-vip-with-primary" rsc="vip" with-rsc="pgsql-clone"
+                with-rsc-role="Promoted" score="INFINITY"/>
+```
+
+这条约束里，`rsc` 是跟随者（源码叫 dependent），`with-rsc` 是被跟随者（源码叫 primary）。读法是「vip 跟着 pgsql-clone 的 Promoted 实例走」。方向很重要：被跟随者先选节点，跟随者再按它的位置调整。
+
+`rsc_colocation` 的属性（[`unpack_simple_colocation`，`pcmk_sched_colocation.c` 第 728–821 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pacemaker/pcmk_sched_colocation.c#L728-L821)）：
+
+<div class="table-scroll">
+
+| 属性 | 含义 | 默认 |
+| --- | --- | --- |
+| `rsc` / `with-rsc` | 跟随者 / 被跟随者 | 必填 |
+| `score` | 想在一起的程度；负数表示想分开 | 必填，0 会被忽略 |
+| `rsc-role` / `with-rsc-role` | 只对某个角色生效，例如 `Promoted` | 不限角色 |
+| `node-attribute` | 「在一起」按哪个节点属性判断 | `#uname`，即同一个节点 |
+| `influence` | 跟随者能不能反过来影响被跟随者的位置 | 跟资源的 `critical` 元属性一致，默认 `true` |
+
+</div>
+
+`node-attribute` 默认是节点名（[第 387 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pacemaker/pcmk_sched_colocation.c#L387)），所以「在一起」默认指同一个节点。改成 `rack` 这样的属性，就变成「放在同一个机架」：只要两个节点的 `rack` 值相同就算在一起。
+
+### 分配一个资源时发生什么
+
+调度器给一个普通资源选节点的函数是 `pcmk__primitive_assign`（[`pcmk_sched_primitive.c` 第 393–551 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pacemaker/pcmk_sched_primitive.c#L393-L551)），和 colocation 有关的顺序是：
+
+1. 先处理分数为 ±INFINITY 的 colocation，再处理有限分数的。
+2. 对「本资源跟随别人」的每条约束，先递归地把被跟随者分配好（[`apply_this_with`，第 300–337 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pacemaker/pcmk_sched_primitive.c#L300-L337)），再按被跟随者的位置改本资源的分数。
+3. 对「别人跟随本资源」的约束，把跟随者对各节点的偏好按比例加回本资源（`pcmk__add_dependent_scores`），前提是这条约束允许跟随者影响被跟随者。
+4. 最后在分数表里挑最高分的节点（[`assign_best_node`，第 166–290 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pacemaker/pcmk_sched_primitive.c#L166-L290)）。
+
+第 2 步改分数的规则在 `pcmk__apply_coloc_to_scores`（[第 1350–1440 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pacemaker/pcmk_sched_colocation.c#L1350-L1440)），分四种情况：
+
+<div class="table-scroll">
+
+| 情况 | 跟随者在这个节点上的分数 |
+| --- | --- |
+| 被跟随者没有分到任何节点，约束分数为正 | 每个节点都减去约束分数；INFINITY 时等于禁止，跟随者也跑不起来 |
+| 被跟随者没有分到任何节点，约束分数为负 | 不变：要避开的东西不在，就没什么可避开 |
+| 这个节点和被跟随者所在节点「在一起」 | 有限分数时加上约束分数；INFINITY 时不加，因为别处已经被禁止 |
+| 这个节点和被跟随者不在一起 | 约束分数为 +INFINITY 时改成 `-INFINITY`；有限分数时不变 |
+
+</div>
+
+所以 `INFINITY` 的 colocation 是硬绑定：被跟随者在哪，跟随者只能在哪；被跟随者哪都去不了，跟随者也停。有限分数只是偏好：其他节点的分数不动，只是「在一起」的节点多了一些分。
+
+有限分数还有一个保护：加完之后如果跟随者没有任何可用节点，就撤回这次调整，日志 `Rolling back scores from …`（[第 1424–1436 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pacemaker/pcmk_sched_colocation.c#L1424-L1436)）。偏好不应该让资源完全跑不起来。
+
+### 反向的约束：-INFINITY
+
+`score="-INFINITY"` 表示两个资源绝不能在同一个节点。调度器除了改分数，还会自动加一组顺序：先让一方停掉（或降级），再让另一方启动（或提升），并且只在两者确实要用同一个节点时才生效（[`anti_colocation_order`，第 291–332 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pacemaker/pcmk_sched_colocation.c#L291-L332)）。没有这组顺序，两个资源交换节点的那一刻可能会短暂地同处一台。
+
+### 被跟随者起不来，跟随者也不启动
+
+分配完成后，如果被跟随者的 start 或 promote 动作不可执行（例如它被禁止在任何节点运行），调度器会把分数为 INFINITY 的跟随者的动作也标成不可执行；有限分数的跟随者不受牵连（[`pcmk__block_colocation_dependents`，第 1119–1194 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pacemaker/pcmk_sched_colocation.c#L1119-L1194)）。
+
+## order：等动作都生成了，再排先后
+
+```xml
+<rsc_order id="ord-promote-then-vip" first="pgsql-clone" first-action="promote"
+           then="vip" then-action="start" kind="Mandatory"/>
+```
+
+order 约束在 `pcmk__apply_orderings` 里处理（[`pcmk_sched_ordering.c` 第 1422–1471 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pacemaker/pcmk_sched_ordering.c#L1422-L1471)），这时每个资源已经选好了节点，要做的动作也都生成了。它只往动作之间加边，不会改任何资源的位置。
+
+### 三种 kind
+
+<div class="table-scroll">
+
+| kind | 默认 | 效果 |
+| --- | --- | --- |
+| `Mandatory` | 是 | 两个动作都要做时，then 等 first 完成；first 不得不做（例如 A 要重启）时，then 也被拉着做；first 是 start 或 promote 且做不成时，then 也不做 |
+| `Optional` | | 只在两个动作恰好出现在同一个 transition 里时排先后，不互相牵连 |
+| `Serialize` | | 两个动作不能同时进行，谁先都行 |
+
+</div>
+
+对应源码：默认 kind 是 Mandatory（[`get_ordering_type`，第 74–114 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pacemaker/pcmk_sched_ordering.c#L74-L114)）；Mandatory 带上「first 要做则 then 也做」和「first 是 start/promote 且做不成则 then 也不做」两个标志，Optional 只带「排先后」一个标志（[`ordering_flags_for_kind`，第 182–225 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pacemaker/pcmk_sched_ordering.c#L182-L225)）。旧写法用 `score` 代替 `kind`，score 为 0 当作 Optional，其余当作 Mandatory，已不推荐。Optional「只在同一个 transition 里排序」的说法只依据文档，源码里看到的是它只带一个排序标志。
+
+### 默认对称
+
+`symmetrical` 默认是 `true`（Serialize 除外，[`get_ordering_symmetry`，第 129–169 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pacemaker/pcmk_sched_ordering.c#L129-L169)）。对称的意思是调度器自动加一条反向约束：把两个动作都换成反动作，再把先后颠倒（[`inverse_ordering`，第 412–429 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pacemaker/pcmk_sched_ordering.c#L412-L429)，[`invert_action`，第 42–71 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pacemaker/pcmk_sched_ordering.c#L42-L71)）：
+
+<div class="table-scroll">
+
+| 写的约束 | 自动加的反向约束 |
+| --- | --- |
+| 先 start A，再 start B | 先 stop B，再 stop A |
+| 先 promote A，再 start B | 先 stop B，再 demote A |
+
+</div>
+
+不写 `first-action` 时默认 `start`；不写 `then-action` 时跟 `first-action` 一样（[`unpack_simple_rsc_order`，第 432–501 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pacemaker/pcmk_sched_ordering.c#L432-L501)）。
+
+## group：colocation 和 order 的简写
+
+```xml
+<group id="g-db">
+  <primitive id="fs" .../>
+  <primitive id="pgsql" .../>
+  <primitive id="vip" .../>
+</group>
+```
+
+group 不是新机制，调度器在内部给成员之间生成约束（[`pcmk_sched_group.c` 第 186–196 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pacemaker/pcmk_sched_group.c#L186-L196)，[第 253–258 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pacemaker/pcmk_sched_group.c#L253-L258)）：
+
+- 每个成员跟随前一个成员，分数 INFINITY，约束 ID 是 `#group-members`。所以整组在同一个节点。
+- 每个成员在前一个成员启动后才启动，停止时倒过来。所以 `fs` → `pgsql` → `vip` 依次启动，`vip` → `pgsql` → `fs` 依次停止。
+
+group 适合「一串资源必须在同一台、按顺序起」的场景。主备数据库不能用 group，因为 group 里的成员没有主备角色可跟随；要用 promotable clone 加单独的 colocation 和 order，见下文。
+
+## 分数相同时怎么挑
+
+算完所有分数后，调度器把可用节点排个序，取第一个。可用的意思是：节点在线、没在关机、不是 unclean（状态未知、等待 fencing）、不在 standby 或 maintenance（[`pcmk__node_available`，`pcmk_sched_nodes.c` 第 30–53 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pacemaker/pcmk_sched_nodes.c#L30-L53)）。排序规则按以下先后比较，前一项分出高下就不看后面的（[`compare_nodes`，第 202–310 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pacemaker/pcmk_sched_nodes.c#L202-L310)）：
+
+<div class="table-scroll">
+
+| 顺序 | 比什么 | 条件 |
+| --- | --- | --- |
+| 1 | 分数，高的在前 | 总是比 |
+| 2 | 剩余容量，多的在前 | 只在 `placement-strategy=balanced` 时比 |
+| 3 | 已分配的资源个数，少的在前 | `placement-strategy` 不是 `minimal` 时比 |
+| 4 | 资源现在就在这个节点上的在前 | 同上，且资源当前在某个节点上 |
+| 5 | 节点名的字母序 | 兜底 |
+
+</div>
+
+第 3 项就是「默认会把资源平摊到各节点」的来源。最高分有多个节点并列时，调度器记一条日志 `Chose node2 for vip from 2 nodes with score 0`；并列的分数是 INFINITY 时这条日志升到 warning 级，因为这通常说明约束写得有歧义（[第 266–278 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pacemaker/pcmk_sched_primitive.c#L266-L278)）。
+
+## 回到主线：主库所在节点断电
+
+接第 4 讲。PostgreSQL 主备部署通常有这两条约束，把 VIP（客户端连的虚拟 IP）绑在主库上：
+
+```xml
+<rsc_colocation id="col-vip-with-primary" rsc="vip" with-rsc="pgsql-clone"
+                with-rsc-role="Promoted" score="INFINITY"/>
+<rsc_order id="ord-promote-then-vip" first="pgsql-clone" first-action="promote"
+           then="vip" then-action="start"/>
+```
+
+node1 断电、fencing 成功之后，调度器在 DC（node2）上算一次：
+
+1. **location 这一步**：node1 已经不可用，它不参与排序。`pgsql-clone` 在 node2 上的实例本来就在运行，拿到 stickiness 加分；`vip` 原来在 node1，在 node2 上只有 0 分。
+2. **选节点这一步**：调度器先分配 `pgsql-clone`，按 promotion score 选出 node2 上的实例当 Promoted（怎么选是第 7 讲）。然后分配 `vip`：它跟随 Promoted 角色，分数 INFINITY，被跟随者在 node2，于是 `vip` 只能去 node2。
+3. **生成动作**：`pgsql` 在 node2 上 promote，`vip` 在 node2 上 start。
+4. **排先后**：order 约束让 `vip` 的 start 等 promote 完成。反向约束（先 stop `vip`，再 demote `pgsql`）这次用不上，因为没有降级。
+
+如果漏写了 order，两个动作会同时下发，VIP 可能在 PostgreSQL 还是只读备库时就已经接管地址，客户端连上来写入失败。如果漏写了 colocation，`vip` 会留在 stickiness 指向的地方或被平摊到别的节点，和主库分开。
+
+## 读状态时看哪里
+
+<div class="table-scroll">
+
+| 命令 | 看什么 |
+| --- | --- |
+| `cibadmin -Q --scope constraints` | CIB 里写了哪些约束，原文 |
+| `crm_simulate -sL` | 用当前 CIB 算一次，打印每个资源在每个节点上的分数（`-s`）；不改集群 |
+| `crm_resource --constraints -r vip` | 跟 vip 有关的约束，包括 group 和 clone 隐含的 |
+| `crm_resource -r vip --why` | 这个资源为什么在这里或为什么没跑 |
+| `crm_resource -r pgsql --ban -N node3` | 加一条 `-INFINITY` 的 location（ID 以 `cli-ban-` 开头），用 `--clear` 删掉 |
+
+</div>
+
+`crm_resource --ban` 和 `--move` 是在 CIB 里写 location 约束，不是一次性的动作。忘了 `--clear`，这条约束会一直留着，后面某次故障转移时资源回不去，原因就在这里。这几条命令的行为只依据文档和命令帮助，没有逐行对照 `tools/crm_resource.c`。
+
+日志里对应本篇的行（来自 pacemaker-schedulerd，大多在 info 或更低级别）：
+
+<div class="table-scroll">
+
+| 日志 | 说明 |
+| --- | --- |
+| `Chose node2 for vip from 2 nodes with score 0` | 最高分有多个节点并列，按上表规则挑了一个 |
+| `vip: Rolling back scores from pgsql-clone (no available nodes)` | 有限分数的 colocation 会让资源无处可去，撤回 |
+| `Resource pgsql has 100 stickiness on node2` | stickiness 加到当前节点（debug 级） |
+
+</div>
+
+## 还没核对的
+
+- `rsc_ticket` 和多站点 ticket 机制没有讲。
+- 约束集（`resource_set`，一条约束里写多个资源）的展开规则没逐行对照，只知道它在同一组解析函数里处理。
+- `influence=false` 时跟随者不再影响被跟随者的位置，这条结论来自 [`pcmk__colocation_has_influence`，第 1040–1071 行](https://github.com/ClusterLabs/pacemaker/blob/Pacemaker-2.1.11/lib/pacemaker/pcmk_sched_colocation.c#L1040-L1071) 的判断，没在集群上复现。
+- 跟随者偏好按比例加回被跟随者（`pcmk__add_dependent_scores`）的具体系数，留到第 6 讲讲分数时一起核对。
